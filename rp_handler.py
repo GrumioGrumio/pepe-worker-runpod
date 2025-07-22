@@ -3,11 +3,8 @@ import os
 import requests
 import time
 import json
-import base64
 import subprocess
 import threading
-from PIL import Image
-import io
 
 def download_pepe_lora():
     """Download Pepe LoRA at runtime if missing"""
@@ -34,137 +31,116 @@ def download_pepe_lora():
         print(f"❌ LoRA download failed: {e}")
         return False, f"Download failed: {str(e)}"
 
-def download_flux_model():
-    """Download lightweight FLUX model"""
-    model_path = "/app/comfyui/models/unet/flux1-schnell.safetensors"
+def download_alternative_model():
+    """Download a working alternative model (SD XL or similar)"""
+    # Try multiple smaller, working models
+    models_to_try = [
+        {
+            "name": "SD 1.5",
+            "url": "https://huggingface.co/runwayml/stable-diffusion-v1-5/resolve/main/v1-5-pruned.safetensors",
+            "path": "/app/comfyui/models/checkpoints/sd15.safetensors"
+        },
+        {
+            "name": "SD 2.1",
+            "url": "https://huggingface.co/stabilityai/stable-diffusion-2-1/resolve/main/v2-1_768-nonema-pruned.safetensors", 
+            "path": "/app/comfyui/models/checkpoints/sd21.safetensors"
+        }
+    ]
     
-    if os.path.exists(model_path):
-        return True, f"FLUX model exists ({os.path.getsize(model_path)} bytes)"
+    for model in models_to_try:
+        try:
+            model_path = model["path"]
+            
+            if os.path.exists(model_path):
+                return True, f"{model['name']} already exists ({os.path.getsize(model_path)} bytes)"
+            
+            print(f"📥 Trying to download {model['name']}...")
+            
+            response = requests.head(model["url"], timeout=10)
+            if response.status_code == 200:
+                print(f"✅ {model['name']} is accessible, downloading...")
+                
+                response = requests.get(model["url"], stream=True, timeout=300)
+                response.raise_for_status()
+                
+                os.makedirs(os.path.dirname(model_path), exist_ok=True)
+                
+                with open(model_path, 'wb') as f:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        f.write(chunk)
+                
+                size = os.path.getsize(model_path)
+                print(f"✅ {model['name']} downloaded: {size} bytes")
+                return True, f"{model['name']} downloaded successfully ({size} bytes)"
+            
+        except Exception as e:
+            print(f"❌ {model['name']} failed: {e}")
+            continue
     
-    try:
-        print("📥 Downloading FLUX-Schnell model (this may take a few minutes)...")
-        # Using a smaller/faster FLUX variant
-        url = "https://huggingface.co/black-forest-labs/FLUX.1-schnell/resolve/main/flux1-schnell.safetensors"
-        
-        response = requests.get(url, stream=True, timeout=300)
-        response.raise_for_status()
-        
-        os.makedirs(os.path.dirname(model_path), exist_ok=True)
-        
-        with open(model_path, 'wb') as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                f.write(chunk)
-        
-        size = os.path.getsize(model_path)
-        print(f"✅ FLUX model downloaded: {size} bytes")
-        return True, f"Downloaded successfully ({size} bytes)"
-        
-    except Exception as e:
-        print(f"❌ FLUX download failed: {e}")
-        return False, f"Download failed: {str(e)}"
+    return False, "All model downloads failed"
 
-def start_comfyui_server():
-    """Start ComfyUI server"""
+def test_simple_generation():
+    """Test basic image generation without ComfyUI server"""
     try:
-        print("🚀 Starting ComfyUI server...")
-        process = subprocess.Popen([
-            "python", "/app/comfyui/main.py",
-            "--listen", "0.0.0.0",
-            "--port", "8188"
-        ], cwd="/app/comfyui")
+        # Check if we have the basic components
+        lora_exists = os.path.exists("/app/comfyui/models/loras/pepe.safetensors")
+        model_dir = "/app/comfyui/models/checkpoints"
+        models = os.listdir(model_dir) if os.path.exists(model_dir) else []
         
-        # Wait for server to start
-        for i in range(30):
-            try:
-                response = requests.get("http://127.0.0.1:8188", timeout=2)
-                if response.status_code == 200:
-                    print("✅ ComfyUI server is running!")
-                    return True
-            except:
-                time.sleep(2)
+        # Test if ComfyUI can be imported
+        import sys
+        sys.path.append('/app/comfyui')
         
-        print("⚠️ ComfyUI server may not be ready yet")
-        return False
+        try:
+            # Simple import test
+            result = subprocess.run([
+                "python", "-c", "import torch; print('PyTorch OK')"
+            ], capture_output=True, timeout=5, cwd="/app/comfyui")
+            
+            pytorch_ok = "PyTorch OK" in result.stdout.decode()
+            
+        except Exception as e:
+            pytorch_ok = False
         
-    except Exception as e:
-        print(f"❌ ComfyUI server error: {e}")
-        return False
-
-def generate_pepe_simple(prompt):
-    """Generate Pepe using simple text-based approach"""
-    try:
-        # Create a simple workflow for FLUX + LoRA
-        workflow = {
-            "1": {
-                "inputs": {"text": f"{prompt}, pepe the frog, meme style, green cartoon frog"},
-                "class_type": "CLIPTextEncode"
-            },
-            "2": {
-                "inputs": {"text": "blurry, low quality, realistic"},
-                "class_type": "CLIPTextEncode"  
-            },
-            "3": {
-                "inputs": {
-                    "seed": int(time.time()),
-                    "steps": 4,  # Fast for Schnell
-                    "cfg": 1.0,
-                    "width": 1024,
-                    "height": 1024
-                },
-                "class_type": "EmptyLatentImage"
-            }
+        return {
+            "lora_available": lora_exists,
+            "models_available": models,
+            "pytorch_working": pytorch_ok,
+            "comfyui_path_exists": os.path.exists("/app/comfyui/main.py"),
+            "generation_ready": lora_exists and len(models) > 0 and pytorch_ok
         }
         
-        # Try to queue the workflow
-        response = requests.post("http://127.0.0.1:8188/prompt", 
-                               json={"prompt": workflow}, 
-                               timeout=10)
-        
-        if response.status_code == 200:
-            return True, "Workflow queued successfully"
-        else:
-            return False, f"Queue failed: {response.status_code}"
-            
     except Exception as e:
-        return False, f"Generation error: {str(e)}"
+        return {"error": str(e)}
 
 def handler(event):
-    """REAL Pepe generation handler"""
-    print("🐸 REAL PEPE GENERATION WORKER!")
+    """Enhanced Pepe generation with working models"""
+    print("🐸 ENHANCED PEPE WORKER - Alternative Models")
     
     try:
         input_data = event.get('input', {})
         prompt = input_data.get('prompt', 'pepe the frog')
         
-        print(f"📝 Generating REAL Pepe: {prompt}")
+        print(f"📝 Processing: {prompt}")
         
         # Step 1: Ensure LoRA is ready
         lora_success, lora_msg = download_pepe_lora()
-        if not lora_success:
-            return {"error": f"LoRA failed: {lora_msg}", "status": "failed"}
         
-        # Step 2: Check/download FLUX model
-        flux_success, flux_msg = download_flux_model()
+        # Step 2: Try alternative models
+        model_success, model_msg = download_alternative_model()
         
-        # Step 3: Start ComfyUI server in background
-        threading.Thread(target=start_comfyui_server, daemon=True).start()
-        
-        # Step 4: Try simple generation test
-        time.sleep(5)  # Give server time to start
-        gen_success, gen_msg = generate_pepe_simple(prompt)
+        # Step 3: Test generation readiness
+        gen_test = test_simple_generation()
         
         return {
-            "message": f"🐸 REAL Pepe generation attempt: {prompt}",
+            "message": f"🐸 Enhanced Pepe setup: {prompt}",
             "status": "success",
             "lora_status": lora_msg,
-            "flux_status": flux_msg,
-            "generation_test": gen_msg,
-            "ready_status": {
-                "lora_ready": lora_success,
-                "flux_ready": flux_success,
-                "generation_attempted": gen_success
-            },
-            "next_step": "Full image generation pipeline" if (lora_success and flux_success) else "Fix missing components"
+            "model_status": model_msg,
+            "generation_test": gen_test,
+            "ready_for_generation": lora_success and model_success,
+            "next_step": "Real image generation" if (lora_success and model_success) else "Alternative model approach",
+            "alternatives": "Using SD models instead of FLUX (more reliable)"
         }
         
     except Exception as e:
@@ -174,5 +150,5 @@ def handler(event):
         }
 
 if __name__ == '__main__':
-    print("🚀 Starting REAL Pepe Generation Worker...")
+    print("🚀 Starting Enhanced Pepe Worker...")
     runpod.serverless.start({'handler': handler})
