@@ -7,9 +7,13 @@ ENV CUDA_VISIBLE_DEVICES=0
 
 # Install Python 3.10 and system dependencies
 RUN apt-get update && apt-get install -y \
+    software-properties-common \
+    && add-apt-repository ppa:deadsnakes/ppa \
+    && apt-get update && apt-get install -y \
     python3.10 \
     python3.10-venv \
     python3.10-dev \
+    python3.10-distutils \
     python3-pip \
     git \
     wget \
@@ -17,9 +21,12 @@ RUN apt-get update && apt-get install -y \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# Create symlinks for python
-RUN ln -s /usr/bin/python3.10 /usr/bin/python
-RUN ln -s /usr/bin/python3.10 /usr/bin/python3
+# Create symlinks for python (check if they exist first)
+RUN ln -sf /usr/bin/python3.10 /usr/bin/python
+RUN ln -sf /usr/bin/python3.10 /usr/bin/python3
+
+# Upgrade pip
+RUN python3.10 -m pip install --upgrade pip
 
 WORKDIR /app
 
