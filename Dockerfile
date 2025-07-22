@@ -1,7 +1,5 @@
-# Use simple Python base
 FROM python:3.10-slim
 
-# Set environment variables
 ENV PYTHONUNBUFFERED=1
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -12,18 +10,28 @@ RUN apt-get update && apt-get install -y \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Set working directory
 WORKDIR /app
 
-# Install PyTorch CPU version (lighter for initial testing)
+# Install PyTorch (CPU for now, will upgrade to GPU later)
 RUN pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
 
-# Install other requirements
+# Install requirements
 RUN pip install runpod requests pillow websocket-client
 
-# For now, create a simple test handler
-COPY rp_handler.py /app/
-COPY test_input.json /app/
+# Clone ComfyUI
+RUN git clone https://github.com/comfyanonymous/ComfyUI.git /app/comfyui
+WORKDIR /app/comfyui
+RUN pip install -r requirements.txt
 
-# Simple test version first
-CMD ["python", "/app/rp_handler.py"]
+# Create model directories
+RUN mkdir -p models/checkpoints models/loras models/vae
+
+# Download Pepe LoRA
+RUN cd models/loras && \
+    wget -O pepe.safetensors "https://huggingface.co/openfree/pepe/resolve/main/pepe.safetensors"
+
+# Copy handler
+COPY rp_handler.py /app/
+
+WORKDIR /app
+CMD ["python", "rp_handler.py"]
