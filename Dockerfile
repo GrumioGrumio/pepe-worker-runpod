@@ -23,14 +23,8 @@ RUN git clone https://github.com/comfyanonymous/ComfyUI.git /app/comfyui
 WORKDIR /app/comfyui
 RUN pip install -r requirements.txt
 
-# Create model directories
+# Create model directories (no LoRA download here)
 RUN mkdir -p models/checkpoints models/loras models/vae
-
-# Download Pepe LoRA with retry and timeout
-RUN cd models/loras && \
-    wget --timeout=30 --tries=3 -O pepe.safetensors "https://huggingface.co/openfree/pepe/resolve/main/pepe.safetensors" || \
-    curl -L -o pepe.safetensors "https://huggingface.co/openfree/pepe/resolve/main/pepe.safetensors" && \
-    ls -la pepe.safetensors
 
 # Copy handler
 COPY rp_handler.py /app/
