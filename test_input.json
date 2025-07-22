@@ -1,0 +1,8 @@
+{
+    "input": {
+        "prompt": "pepe the frog on a skateboard, meme style",
+        "lora_strength": 0.8,
+        "steps": 20,
+        "cfg_scale": 7.5
+    }
+}
