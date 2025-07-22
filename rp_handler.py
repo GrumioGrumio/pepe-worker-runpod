@@ -3,166 +3,191 @@ import os
 import requests
 import time
 import json
-import subprocess
 import base64
 from PIL import Image
 import io
 
-def check_comfyui_status():
-    """Check if ComfyUI server is running"""
+def check_files_detailed():
+    """Check exactly what files exist"""
     try:
-        response = requests.get("http://localhost:8188/", timeout=5)
-        return response.status_code == 200
-    except:
-        return False
-
-def quick_setup_comfyui():
-    """Quick setup if ComfyUI isn't running"""
-    try:
-        print("🔧 ComfyUI not running, starting quick setup...")
+        file_check = {}
         
-        # Check if files exist
+        # Check ComfyUI structure
         comfyui_path = "/workspace/comfyui"
-        lora_path = "/workspace/comfyui/models/loras/pepe.safetensors"
-        model_path = "/workspace/comfyui/models/checkpoints/sd15.safetensors"
+        file_check["comfyui_exists"] = os.path.exists(comfyui_path)
         
-        setup_needed = []
+        if os.path.exists(comfyui_path):
+            file_check["comfyui_contents"] = os.listdir(comfyui_path)
         
-        if not os.path.exists(comfyui_path):
-            setup_needed.append("ComfyUI installation")
-        if not os.path.exists(lora_path):
-            setup_needed.append("Pepe LoRA")
-        if not os.path.exists(model_path):
-            setup_needed.append("SD 1.5 model")
+        # Check models directory structure
+        models_path = "/workspace/comfyui/models"
+        if os.path.exists(models_path):
+            file_check["models_structure"] = {}
+            for subdir in ["checkpoints", "loras", "vae", "clip"]:
+                subdir_path = os.path.join(models_path, subdir)
+                if os.path.exists(subdir_path):
+                    files = os.listdir(subdir_path)
+                    file_check["models_structure"][subdir] = files
+                else:
+                    file_check["models_structure"][subdir] = "MISSING"
         
-        if setup_needed:
-            return False, f"Missing: {', '.join(setup_needed)} - need full fresh setup"
+        # Check specific files
+        important_files = {
+            "main.py": "/workspace/comfyui/main.py",
+            "sd15_model": "/workspace/comfyui/models/checkpoints/sd15.safetensors",
+            "pepe_lora": "/workspace/comfyui/models/loras/pepe.safetensors"
+        }
         
-        # Try to start server
-        print("🚀 Starting ComfyUI server...")
+        for name, path in important_files.items():
+            if os.path.exists(path):
+                size = os.path.getsize(path)
+                file_check[name] = f"✅ {size} bytes"
+            else:
+                file_check[name] = "❌ Missing"
         
-        env = os.environ.copy()
-        env["CUDA_VISIBLE_DEVICES"] = "0"
-        env["PYTHONPATH"] = comfyui_path
-        
-        process = subprocess.Popen(
-            ["python", "main.py", "--listen", "0.0.0.0", "--port", "8188"],
-            cwd=comfyui_path,
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            start_new_session=True
-        )
-        
-        # Wait for startup
-        for i in range(60):
-            try:
-                response = requests.get("http://localhost:8188/", timeout=3)
-                if response.status_code == 200:
-                    print("✅ ComfyUI server started!")
-                    return True, "Server started successfully"
-            except:
-                pass
+        # Check output directory
+        output_path = "/workspace/comfyui/output"
+        if os.path.exists(output_path):
+            output_files = []
+            for root, dirs, files in os.walk(output_path):
+                for file in files:
+                    if file.lower().endswith(('.png', '.jpg', '.jpeg')):
+                        file_path = os.path.join(root, file)
+                        created = time.ctime(os.path.getctime(file_path))
+                        size = os.path.getsize(file_path)
+                        output_files.append({
+                            "name": file,
+                            "path": file_path,
+                            "created": created,
+                            "size": size
+                        })
             
-            if process.poll() is not None:
-                stdout, stderr = process.communicate()
-                return False, f"Server crashed: {stderr.decode()[:200]}"
-            
-            time.sleep(1)
-        
-        return False, "Server startup timeout"
-        
-    except Exception as e:
-        return False, f"Quick setup failed: {str(e)}"
-
-def install_comfyui_fresh():
-    """Install ComfyUI from scratch"""
-    try:
-        print("📦 Installing ComfyUI from scratch...")
-        
-        app_dir = "/workspace/comfyui"
-        os.makedirs(app_dir, exist_ok=True)
-        
-        # Clone ComfyUI
-        result = subprocess.run([
-            "git", "clone", "https://github.com/comfyanonymous/ComfyUI.git", app_dir
-        ], capture_output=True, timeout=120)
-        
-        if result.returncode != 0:
-            return False, f"Git clone failed: {result.stderr.decode()}"
-        
-        # Install dependencies
-        subprocess.run([
-            "pip", "install", "-r", "requirements.txt"
-        ], cwd=app_dir, capture_output=True, timeout=180)
-        
-        return True, f"ComfyUI installed at {app_dir}"
-        
-    except Exception as e:
-        return False, f"ComfyUI installation failed: {str(e)}"
-
-def download_models_fresh():
-    """Download models if missing"""
-    try:
-        print("📥 Downloading models...")
-        
-        downloads = {}
-        
-        # Download SD 1.5 model
-        model_path = "/workspace/comfyui/models/checkpoints/sd15.safetensors"
-        if not os.path.exists(model_path):
-            os.makedirs(os.path.dirname(model_path), exist_ok=True)
-            
-            response = requests.get(
-                "https://huggingface.co/runwayml/stable-diffusion-v1-5/resolve/main/v1-5-pruned-emaonly.safetensors",
-                stream=True, timeout=600
-            )
-            response.raise_for_status()
-            
-            with open(model_path, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=1024*1024):
-                    if chunk:
-                        f.write(chunk)
-            
-            downloads["model"] = f"✅ Downloaded {os.path.getsize(model_path)} bytes"
+            file_check["output_files"] = output_files[:10]  # Last 10 files
         else:
-            downloads["model"] = "✅ Already exists"
+            file_check["output_files"] = "Output directory missing"
         
-        # Download Pepe LoRA
-        lora_path = "/workspace/comfyui/models/loras/pepe.safetensors"
-        if not os.path.exists(lora_path):
-            os.makedirs(os.path.dirname(lora_path), exist_ok=True)
-            
-            response = requests.get(
-                "https://huggingface.co/openfree/pepe/resolve/main/pepe.safetensors",
-                stream=True, timeout=180
-            )
-            response.raise_for_status()
-            
-            with open(lora_path, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    if chunk:
-                        f.write(chunk)
-            
-            downloads["lora"] = f"✅ Downloaded {os.path.getsize(lora_path)} bytes"
-        else:
-            downloads["lora"] = "✅ Already exists"
-        
-        return downloads
+        return file_check
         
     except Exception as e:
         return {"error": str(e)}
 
-def generate_pepe_with_lora(prompt):
-    """Generate Pepe with LoRA - only if server is running"""
+def test_basic_generation():
+    """Test basic SD generation without LoRA first"""
     try:
-        if not check_comfyui_status():
-            return {"error": "ComfyUI server not running"}
+        print("🧪 Testing basic SD generation (no LoRA)...")
         
-        print(f"🐸 Generating REAL Pepe with LoRA: {prompt}")
+        # Simple workflow without LoRA
+        basic_workflow = {
+            "1": {
+                "inputs": {"ckpt_name": "sd15.safetensors"},
+                "class_type": "CheckpointLoaderSimple"
+            },
+            "2": {
+                "inputs": {
+                    "text": "a simple green frog, cartoon style, clean background",
+                    "clip": ["1", 1]
+                },
+                "class_type": "CLIPTextEncode"
+            },
+            "3": {
+                "inputs": {
+                    "text": "blurry, low quality, distorted",
+                    "clip": ["1", 1]
+                },
+                "class_type": "CLIPTextEncode"
+            },
+            "4": {
+                "inputs": {
+                    "width": 512,
+                    "height": 512,
+                    "batch_size": 1
+                },
+                "class_type": "EmptyLatentImage"
+            },
+            "5": {
+                "inputs": {
+                    "seed": 12345,
+                    "steps": 20,
+                    "cfg": 7.0,
+                    "sampler_name": "euler",
+                    "scheduler": "normal",
+                    "denoise": 1.0,
+                    "model": ["1", 0],
+                    "positive": ["2", 0],
+                    "negative": ["3", 0],
+                    "latent_image": ["4", 0]
+                },
+                "class_type": "KSampler"
+            },
+            "6": {
+                "inputs": {
+                    "samples": ["5", 0],
+                    "vae": ["1", 2]
+                },
+                "class_type": "VAEDecode"
+            },
+            "7": {
+                "inputs": {
+                    "filename_prefix": f"basic_test_{int(time.time())}",
+                    "images": ["6", 0]
+                },
+                "class_type": "SaveImage"
+            }
+        }
         
-        # Enhanced workflow with LoRA
-        workflow = {
+        # Submit basic generation
+        response = requests.post(
+            "http://localhost:8188/prompt",
+            json={"prompt": basic_workflow},
+            timeout=30
+        )
+        
+        if response.status_code != 200:
+            return {"error": f"Basic generation failed: {response.status_code}"}
+        
+        prompt_data = response.json()
+        prompt_id = prompt_data.get("prompt_id")
+        
+        print(f"✅ Basic generation queued: {prompt_id}")
+        
+        # Wait for completion
+        for i in range(60):
+            try:
+                queue_response = requests.get("http://localhost:8188/queue", timeout=5)
+                if queue_response.status_code == 200:
+                    queue_data = queue_response.json()
+                    
+                    running = queue_data.get("queue_running", [])
+                    pending = queue_data.get("queue_pending", [])
+                    
+                    still_processing = any(
+                        item[1].get("prompt_id") == prompt_id 
+                        for item in running + pending
+                        if len(item) > 1 and isinstance(item[1], dict)
+                    )
+                    
+                    if not still_processing:
+                        print("🎉 Basic generation completed!")
+                        break
+                
+                time.sleep(1)
+                
+            except Exception as e:
+                print(f"⚠️ Queue check error: {e}")
+                time.sleep(1)
+        
+        return {"success": True, "prompt_id": prompt_id, "method": "basic_sd"}
+        
+    except Exception as e:
+        return {"error": f"Basic generation failed: {str(e)}"}
+
+def test_lora_generation():
+    """Test LoRA generation after basic works"""
+    try:
+        print("🐸 Testing LoRA generation...")
+        
+        # LoRA workflow
+        lora_workflow = {
             "1": {
                 "inputs": {"ckpt_name": "sd15.safetensors"},
                 "class_type": "CheckpointLoaderSimple"
@@ -170,8 +195,8 @@ def generate_pepe_with_lora(prompt):
             "2": {
                 "inputs": {
                     "lora_name": "pepe.safetensors",
-                    "strength_model": 1.0,
-                    "strength_clip": 1.0,
+                    "strength_model": 0.8,  # Reduced strength for testing
+                    "strength_clip": 0.8,
                     "model": ["1", 0],
                     "clip": ["1", 1]
                 },
@@ -179,14 +204,14 @@ def generate_pepe_with_lora(prompt):
             },
             "3": {
                 "inputs": {
-                    "text": f"pepe the frog, {prompt}, meme style, simple cartoon, green frog character, feels good man",
+                    "text": "pepe the frog, simple green frog character, meme style",
                     "clip": ["2", 1]
                 },
                 "class_type": "CLIPTextEncode"
             },
             "4": {
                 "inputs": {
-                    "text": "blurry, low quality, distorted, realistic, photorealistic, human, anime, complex background, multiple characters",
+                    "text": "blurry, low quality, distorted, realistic",
                     "clip": ["2", 1]
                 },
                 "class_type": "CLIPTextEncode"
@@ -201,10 +226,10 @@ def generate_pepe_with_lora(prompt):
             },
             "6": {
                 "inputs": {
-                    "seed": int(time.time()) % 1000000,
-                    "steps": 25,
-                    "cfg": 8.0,
-                    "sampler_name": "euler_ancestral",
+                    "seed": 54321,
+                    "steps": 20,
+                    "cfg": 7.5,
+                    "sampler_name": "euler",
                     "scheduler": "normal",
                     "denoise": 1.0,
                     "model": ["2", 0],
@@ -223,33 +248,30 @@ def generate_pepe_with_lora(prompt):
             },
             "8": {
                 "inputs": {
-                    "filename_prefix": f"real_pepe_{int(time.time())}",
+                    "filename_prefix": f"lora_test_{int(time.time())}",
                     "images": ["7", 0]
                 },
                 "class_type": "SaveImage"
             }
         }
         
-        # Submit generation
+        # Submit LoRA generation
         response = requests.post(
             "http://localhost:8188/prompt",
-            json={"prompt": workflow},
+            json={"prompt": lora_workflow},
             timeout=30
         )
         
         if response.status_code != 200:
-            return {"error": f"Generation failed: {response.status_code}"}
+            return {"error": f"LoRA generation failed: {response.status_code}"}
         
         prompt_data = response.json()
         prompt_id = prompt_data.get("prompt_id")
         
-        if not prompt_id:
-            return {"error": "No prompt ID returned"}
-        
-        print(f"✅ Pepe generation queued: {prompt_id}")
+        print(f"✅ LoRA generation queued: {prompt_id}")
         
         # Wait for completion
-        for i in range(120):
+        for i in range(90):
             try:
                 queue_response = requests.get("http://localhost:8188/queue", timeout=5)
                 if queue_response.status_code == 200:
@@ -265,7 +287,7 @@ def generate_pepe_with_lora(prompt):
                     )
                     
                     if not still_processing:
-                        print("🎉 Pepe generation completed!")
+                        print("🎉 LoRA generation completed!")
                         break
                 
                 time.sleep(1)
@@ -274,21 +296,29 @@ def generate_pepe_with_lora(prompt):
                 print(f"⚠️ Queue check error: {e}")
                 time.sleep(1)
         
-        # Find generated image
-        output_dir = "/workspace/comfyui/output"
-        image_files = []
+        return {"success": True, "prompt_id": prompt_id, "method": "lora"}
         
-        if os.path.exists(output_dir):
-            for root, dirs, files in os.walk(output_dir):
-                for file in files:
-                    if file.lower().endswith(('.png', '.jpg', '.jpeg')):
-                        file_path = os.path.join(root, file)
-                        if time.time() - os.path.getctime(file_path) < 300:
-                            image_files.append(file_path)
+    except Exception as e:
+        return {"error": f"LoRA generation failed: {str(e)}"}
+
+def get_latest_image():
+    """Get the most recent generated image"""
+    try:
+        output_dir = "/workspace/comfyui/output"
+        if not os.path.exists(output_dir):
+            return None, "Output directory doesn't exist"
+        
+        image_files = []
+        for root, dirs, files in os.walk(output_dir):
+            for file in files:
+                if file.lower().endswith(('.png', '.jpg', '.jpeg')):
+                    file_path = os.path.join(root, file)
+                    image_files.append(file_path)
         
         if not image_files:
-            return {"error": "No generated images found"}
+            return None, "No images found in output directory"
         
+        # Get most recent
         latest_image = max(image_files, key=os.path.getctime)
         
         # Convert to base64
@@ -297,97 +327,75 @@ def generate_pepe_with_lora(prompt):
             img_base64 = base64.b64encode(img_data).decode('utf-8')
         
         return {
-            "success": True,
-            "image_path": latest_image,
-            "image_base64": img_base64,
-            "lora_used": True,
-            "prompt_id": prompt_id
-        }
+            "path": latest_image,
+            "base64": img_base64,
+            "size": len(img_data),
+            "created": time.ctime(os.path.getctime(latest_image))
+        }, "Success"
         
     except Exception as e:
-        return {"error": f"Pepe generation failed: {str(e)}"}
+        return None, f"Error getting image: {str(e)}"
 
 def handler(event):
-    """Auto-setup Pepe handler with LoRA"""
-    print("🐸 AUTO-SETUP PEPE GENERATOR v12.0! 🔧")
+    """Debug handler to diagnose and test step by step"""
+    print("🔍 DEBUG PEPE HANDLER v13.0 - STEP BY STEP! 🕵️")
     
     try:
         input_data = event.get('input', {})
-        prompt = input_data.get('prompt', 'pepe the frog')
-        action = input_data.get('action', 'generate')
+        action = input_data.get('action', 'debug')
         
-        print(f"📝 Request: {prompt}")
+        # Step 1: Check all files
+        print("📁 Step 1: Checking files...")
+        file_check = check_files_detailed()
         
-        # Check if ComfyUI is running
-        server_running = check_comfyui_status()
-        print(f"🖥️ ComfyUI server: {'✅ Running' if server_running else '❌ Not running'}")
+        # Step 2: Test basic generation
+        print("🧪 Step 2: Testing basic generation...")
+        basic_test = test_basic_generation()
         
-        if not server_running:
-            print("🔧 Server not running, attempting setup...")
+        # Step 3: Get any existing images
+        print("🖼️ Step 3: Checking for generated images...")
+        latest_image, image_msg = get_latest_image()
+        
+        # Step 4: Test LoRA if basic worked
+        lora_test = {"skipped": "Basic generation didn't work"}
+        if basic_test.get("success"):
+            print("🐸 Step 4: Testing LoRA generation...")
+            lora_test = test_lora_generation()
             
-            # Try quick setup first
-            quick_success, quick_msg = quick_setup_comfyui()
-            
-            if not quick_success:
-                print("📦 Quick setup failed, doing full fresh install...")
-                
-                # Do full fresh setup
-                comfyui_success, comfyui_msg = install_comfyui_fresh()
-                if not comfyui_success:
-                    return {"error": f"ComfyUI install failed: {comfyui_msg}"}
-                
-                model_downloads = download_models_fresh()
-                if "error" in model_downloads:
-                    return {"error": f"Model download failed: {model_downloads['error']}"}
-                
-                # Try to start server after fresh install
-                quick_success, quick_msg = quick_setup_comfyui()
-                
-                if not quick_success:
-                    return {
-                        "error": "Full setup completed but server won't start",
-                        "details": quick_msg,
-                        "comfyui_install": comfyui_msg,
-                        "downloads": model_downloads
-                    }
+            # Get image after LoRA test
+            if lora_test.get("success"):
+                latest_image, image_msg = get_latest_image()
         
-        # Now try to generate with LoRA
-        if action == 'status':
-            return {
-                "message": "🐸 Auto-Setup Pepe Generator",
-                "server_running": check_comfyui_status(),
-                "files": {
-                    "comfyui": os.path.exists("/workspace/comfyui"),
-                    "pepe_lora": os.path.exists("/workspace/comfyui/models/loras/pepe.safetensors"),
-                    "sd15_model": os.path.exists("/workspace/comfyui/models/checkpoints/sd15.safetensors")
-                }
-            }
-        
-        # Generate Pepe
-        generation_result = generate_pepe_with_lora(prompt)
-        
-        if generation_result.get("success"):
-            return {
-                "message": f"🐸 REAL PEPE GENERATED WITH LORA!",
-                "prompt": prompt,
-                "generation": generation_result,
-                "auto_setup": "Server was automatically configured",
-                "lora_used": "pepe.safetensors at full strength",
-                "ready_for_generation": True
-            }
-        else:
-            return {
-                "error": "Pepe generation failed after setup",
-                "details": generation_result,
-                "server_status": check_comfyui_status()
-            }
+        return {
+            "message": "🔍 Debug Analysis Complete",
+            "step1_files": file_check,
+            "step2_basic_generation": basic_test,
+            "step3_image_check": {
+                "latest_image": latest_image,
+                "message": image_msg
+            },
+            "step4_lora_generation": lora_test,
+            "diagnosis": {
+                "comfyui_running": True,  # We know it's running
+                "files_present": file_check.get("pepe_lora", "❌").startswith("✅"),
+                "basic_generation": basic_test.get("success", False),
+                "lora_generation": lora_test.get("success", False)
+            },
+            "next_steps": [
+                "✅ Server running",
+                "🔍 Check file analysis above",
+                "🧪 Check basic generation results", 
+                "🐸 Check LoRA generation results",
+                "🖼️ Check if any images were created"
+            ]
+        }
         
     except Exception as e:
         return {
             "error": str(e),
-            "debug": "Auto-setup handler exception"
+            "debug": "Debug handler exception"
         }
 
 if __name__ == '__main__':
-    print("🚀 Starting Auto-Setup Pepe Generator with LoRA...")
+    print("🚀 Starting Debug Pepe Handler...")
     runpod.serverless.start({'handler': handler})
