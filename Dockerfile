@@ -1,5 +1,5 @@
 # Use NVIDIA CUDA base image instead of python:3.10-slim
-FROM nvidia/cuda:12.1-cudnn8-devel-ubuntu22.04
+FROM nvidia/cuda:12.1.1-cudnn8-devel-ubuntu22.04
 
 ENV PYTHONUNBUFFERED=1
 ENV DEBIAN_FRONTEND=noninteractive
