@@ -7,6 +7,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y \
     git \
     wget \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -25,9 +26,10 @@ RUN pip install -r requirements.txt
 # Create model directories
 RUN mkdir -p models/checkpoints models/loras models/vae
 
-# Download ONLY the Pepe LoRA (small file)
+# Download Pepe LoRA with retry and timeout
 RUN cd models/loras && \
-    wget -O pepe.safetensors "https://huggingface.co/openfree/pepe/resolve/main/pepe.safetensors" && \
+    wget --timeout=30 --tries=3 -O pepe.safetensors "https://huggingface.co/openfree/pepe/resolve/main/pepe.safetensors" || \
+    curl -L -o pepe.safetensors "https://huggingface.co/openfree/pepe/resolve/main/pepe.safetensors" && \
     ls -la pepe.safetensors
 
 # Copy handler
