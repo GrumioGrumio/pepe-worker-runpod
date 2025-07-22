@@ -7,268 +7,195 @@ import subprocess
 import threading
 import sys
 from pathlib import Path
+import shutil
 
-def fix_cuda_libraries():
-    """Fix missing CUDA libraries"""
+def verify_fresh_environment():
+    """Verify we have a clean, working environment"""
     try:
-        print("🔧 Fixing CUDA libraries...")
+        print("🔍 Verifying fresh environment...")
         
-        # Step 1: Check current CUDA installation
-        cuda_paths = [
-            "/usr/local/cuda",
-            "/usr/local/cuda-12.7",
-            "/usr/local/cuda-12.1", 
-            "/usr/local/cuda-11.8",
-            "/opt/cuda"
-        ]
+        checks = {}
         
-        cuda_found = False
-        cuda_path = None
-        
-        for path in cuda_paths:
-            if os.path.exists(path):
-                cuda_found = True
-                cuda_path = path
-                print(f"✅ Found CUDA at: {path}")
-                break
-        
-        if not cuda_found:
-            print("❌ No CUDA installation found")
-        
-        # Step 2: Install CUDA toolkit
+        # Check PyTorch GPU
         try:
-            print("📦 Installing CUDA toolkit...")
-            
-            # Try apt-get installation
-            apt_commands = [
-                ["apt-get", "update"],
-                ["apt-get", "install", "-y", "nvidia-cuda-toolkit"],
-                ["apt-get", "install", "-y", "libcublas-12-1", "libcublas-dev-12-1"],
-                ["apt-get", "install", "-y", "libcudnn8", "libcudnn8-dev"],
-                ["apt-get", "install", "-y", "cuda-libraries-12-1", "cuda-libraries-dev-12-1"]
-            ]
-            
-            for cmd in apt_commands:
-                try:
-                    result = subprocess.run(cmd, capture_output=True, timeout=120)
-                    if result.returncode == 0:
-                        print(f"✅ {' '.join(cmd[:3])} successful")
-                    else:
-                        print(f"⚠️ {' '.join(cmd[:3])} warning: {result.stderr.decode()[:100]}")
-                except Exception as e:
-                    print(f"❌ {' '.join(cmd[:3])} failed: {e}")
-                    
+            import torch
+            checks["pytorch"] = {
+                "version": torch.__version__,
+                "cuda_available": torch.cuda.is_available(),
+                "device_count": torch.cuda.device_count(),
+                "device_name": torch.cuda.get_device_name(0) if torch.cuda.is_available() else "None"
+            }
         except Exception as e:
-            print(f"❌ CUDA toolkit install failed: {e}")
+            checks["pytorch"] = {"error": str(e)}
         
-        # Step 3: Set up environment paths
-        cuda_paths_to_try = [
-            "/usr/local/cuda/lib64",
-            "/usr/local/cuda-12.7/lib64",
-            "/usr/local/cuda-12.1/lib64",
-            "/usr/lib/x86_64-linux-gnu",
-            "/usr/local/lib"
-        ]
-        
-        existing_paths = []
-        for path in cuda_paths_to_try:
-            if os.path.exists(path):
-                existing_paths.append(path)
-        
-        if existing_paths:
-            current_ld_path = os.environ.get("LD_LIBRARY_PATH", "")
-            new_ld_path = ":".join(existing_paths + [current_ld_path])
-            os.environ["LD_LIBRARY_PATH"] = new_ld_path
-            print(f"✅ Set LD_LIBRARY_PATH: {new_ld_path[:100]}...")
-        
-        # Step 4: Try conda CUDA installation
+        # Check disk space
         try:
-            print("🐍 Installing CUDA via conda...")
-            conda_result = subprocess.run([
-                "conda", "install", "cudatoolkit=12.1", "cudnn", "-c", "conda-forge", "-y"
-            ], capture_output=True, timeout=180)
+            statvfs = os.statvfs("/")
+            free_space_gb = (statvfs.f_bavail * statvfs.f_frsize) / (1024**3)
+            total_space_gb = (statvfs.f_blocks * statvfs.f_frsize) / (1024**3)
             
-            if conda_result.returncode == 0:
-                print("✅ Conda CUDA install successful")
-            else:
-                print(f"⚠️ Conda CUDA warning: {conda_result.stderr.decode()[:100]}")
-                
+            checks["disk_space"] = {
+                "free_gb": free_space_gb,
+                "total_gb": total_space_gb,
+                "adequate": free_space_gb > 30  # Need 30GB+ for models
+            }
         except Exception as e:
-            print(f"❌ Conda CUDA failed: {e}")
+            checks["disk_space"] = {"error": str(e)}
         
-        # Step 5: Test for libcublas
-        library_test_result = test_cuda_libraries()
-        
-        return library_test_result
-        
-    except Exception as e:
-        return {"success": False, "error": str(e)}
-
-def test_cuda_libraries():
-    """Test if CUDA libraries are available"""
-    try:
-        print("🧪 Testing CUDA libraries...")
-        
-        # Libraries we need
-        required_libs = [
-            "libcublas.so",
-            "libcurand.so", 
-            "libcudnn.so",
-            "libcufft.so"
-        ]
-        
-        found_libs = {}
-        
-        # Search paths
-        search_paths = [
-            "/usr/local/cuda/lib64",
-            "/usr/local/cuda-12.7/lib64",
-            "/usr/local/cuda-12.1/lib64",
-            "/usr/lib/x86_64-linux-gnu",
-            "/usr/local/lib"
-        ]
-        
-        for lib in required_libs:
-            found = False
-            for search_path in search_paths:
-                if os.path.exists(search_path):
-                    # Look for the library file
-                    for file in os.listdir(search_path):
-                        if lib in file:
-                            found_libs[lib] = f"✅ Found at {search_path}/{file}"
-                            found = True
-                            break
-                    if found:
-                        break
-            
-            if not found:
-                found_libs[lib] = "❌ Not found"
-        
-        # Test with ldconfig
+        # Check CUDA libraries
         try:
-            ldconfig_result = subprocess.run(["ldconfig", "-p"], capture_output=True, timeout=10)
-            ldconfig_output = ldconfig_result.stdout.decode()
+            result = subprocess.run(["ldconfig", "-p"], capture_output=True, timeout=10)
+            ldconfig_output = result.stdout.decode()
             
-            for lib in required_libs:
-                if lib in ldconfig_output:
-                    if found_libs[lib].startswith("❌"):
-                        found_libs[lib] = f"✅ Found in system (ldconfig)"
-                        
+            cuda_libs = ["libcublas", "libcurand", "libcudnn"]
+            found_libs = {lib: lib in ldconfig_output for lib in cuda_libs}
+            
+            checks["cuda_libraries"] = {
+                "libraries": found_libs,
+                "all_found": all(found_libs.values())
+            }
         except Exception as e:
-            print(f"⚠️ ldconfig test failed: {e}")
+            checks["cuda_libraries"] = {"error": str(e)}
         
-        success_count = sum(1 for status in found_libs.values() if status.startswith("✅"))
+        # Overall health
+        pytorch_ok = checks.get("pytorch", {}).get("cuda_available", False)
+        disk_ok = checks.get("disk_space", {}).get("adequate", False)
+        cuda_ok = checks.get("cuda_libraries", {}).get("all_found", False)
         
-        return {
-            "success": success_count >= 2,  # Need at least 2 libraries
-            "libraries": found_libs,
-            "found_count": f"{success_count}/{len(required_libs)}"
+        checks["overall_health"] = {
+            "pytorch_gpu": pytorch_ok,
+            "disk_space": disk_ok,
+            "cuda_libraries": cuda_ok,
+            "ready_for_setup": pytorch_ok and disk_ok and cuda_ok
         }
         
+        return checks
+        
     except Exception as e:
-        return {"success": False, "error": str(e)}
+        return {"error": str(e)}
 
-def install_pytorch_with_cuda_fix():
-    """Install PyTorch after CUDA libraries are fixed"""
+def install_comfyui_fresh():
+    """Install ComfyUI from scratch in fresh environment"""
     try:
-        print("🚀 Installing PyTorch with CUDA fix...")
+        print("📦 Installing ComfyUI from scratch...")
         
-        # Ensure environment is set
-        cuda_paths = [
-            "/usr/local/cuda/lib64",
-            "/usr/local/cuda-12.1/lib64",
-            "/usr/lib/x86_64-linux-gnu"
-        ]
+        # Create app directory
+        app_dir = "/workspace/comfyui"
+        os.makedirs(app_dir, exist_ok=True)
         
-        existing_cuda_paths = [p for p in cuda_paths if os.path.exists(p)]
-        if existing_cuda_paths:
-            os.environ["LD_LIBRARY_PATH"] = ":".join(existing_cuda_paths) + ":" + os.environ.get("LD_LIBRARY_PATH", "")
-        
-        # Remove existing PyTorch
+        # Clone ComfyUI
         try:
-            subprocess.run([
-                sys.executable, "-m", "pip", "uninstall", 
-                "torch", "torchvision", "torchaudio", "-y"
-            ], capture_output=True, timeout=60)
-        except:
-            pass
+            print("📥 Cloning ComfyUI repository...")
+            result = subprocess.run([
+                "git", "clone", "https://github.com/comfyanonymous/ComfyUI.git", app_dir
+            ], capture_output=True, timeout=120)
+            
+            if result.returncode != 0:
+                return False, f"Git clone failed: {result.stderr.decode()}"
+            
+            print("✅ ComfyUI repository cloned")
+        except Exception as e:
+            return False, f"Git clone exception: {str(e)}"
         
-        # Install with CUDA
-        install_commands = [
-            {
-                "name": "PyTorch CUDA 12.1",
-                "cmd": [
-                    sys.executable, "-m", "pip", "install",
-                    "torch==2.1.2+cu121", "torchvision==0.16.2+cu121", "torchaudio==2.1.2+cu121",
-                    "--index-url", "https://download.pytorch.org/whl/cu121",
-                    "--force-reinstall"
-                ]
-            },
-            {
-                "name": "Latest PyTorch GPU",
-                "cmd": [
-                    sys.executable, "-m", "pip", "install",
-                    "torch", "torchvision", "torchaudio",
-                    "--index-url", "https://download.pytorch.org/whl/cu121"
-                ]
-            }
-        ]
-        
-        for install_cmd in install_commands:
-            try:
-                print(f"📦 Trying {install_cmd['name']}...")
-                
-                result = subprocess.run(
-                    install_cmd["cmd"], 
-                    capture_output=True, 
-                    timeout=300,
-                    env=os.environ
-                )
-                
-                if result.returncode == 0:
-                    # Test the installation
-                    test_result = subprocess.run([
-                        sys.executable, "-c",
-                        "import torch; print(f'PyTorch {torch.__version__} CUDA: {torch.cuda.is_available()}')"
-                    ], capture_output=True, timeout=30, env=os.environ)
+        # Install dependencies
+        try:
+            print("📦 Installing ComfyUI dependencies...")
+            
+            # Install required packages
+            packages = [
+                "xformers==0.0.22.post7",
+                "transformers>=4.25.1",
+                "tokenizers>=0.13.3", 
+                "sentencepiece",
+                "safetensors>=0.3.2",
+                "aiohttp",
+                "accelerate",
+                "pyyaml",
+                "Pillow",
+                "scipy",
+                "tqdm",
+                "psutil",
+                "kornia>=0.7.1",
+                "spandrel"
+            ]
+            
+            for package in packages:
+                try:
+                    result = subprocess.run([
+                        sys.executable, "-m", "pip", "install", package, "--no-cache-dir"
+                    ], capture_output=True, timeout=180)
                     
-                    if test_result.returncode == 0:
-                        output = test_result.stdout.decode()
-                        if "CUDA: True" in output:
-                            return True, f"SUCCESS: {install_cmd['name']} - {output.strip()}"
-                        else:
-                            print(f"⚠️ {install_cmd['name']} installed but no CUDA: {output}")
+                    if result.returncode == 0:
+                        print(f"✅ Installed {package}")
                     else:
-                        print(f"⚠️ {install_cmd['name']} test failed: {test_result.stderr.decode()}")
-                else:
-                    print(f"❌ {install_cmd['name']} install failed: {result.stderr.decode()[:200]}")
-                    
-            except Exception as e:
-                print(f"❌ {install_cmd['name']} exception: {e}")
-                continue
-        
-        return False, "All PyTorch installation attempts failed"
+                        print(f"⚠️ Warning installing {package}: {result.stderr.decode()[:100]}")
+                        
+                except Exception as e:
+                    print(f"❌ Failed to install {package}: {e}")
+            
+            return True, f"ComfyUI installed at {app_dir}"
+            
+        except Exception as e:
+            return False, f"Dependency installation failed: {str(e)}"
         
     except Exception as e:
-        return False, f"PyTorch install error: {str(e)}"
+        return False, f"ComfyUI installation failed: {str(e)}"
 
-def redownload_models():
-    """Re-download models that got wiped"""
+def download_models_fresh():
+    """Download models to fresh ComfyUI installation"""
     try:
-        print("📥 Re-downloading wiped models...")
+        print("📥 Downloading models for fresh installation...")
+        
+        # Create model directories
+        models_dir = "/workspace/comfyui/models"
+        checkpoints_dir = os.path.join(models_dir, "checkpoints")
+        loras_dir = os.path.join(models_dir, "loras")
+        
+        os.makedirs(checkpoints_dir, exist_ok=True)
+        os.makedirs(loras_dir, exist_ok=True)
         
         downloads = {}
         
-        # Download LoRA
-        lora_path = "/app/comfyui/models/loras/pepe.safetensors"
+        # Download SD 1.5 model
+        model_path = os.path.join(checkpoints_dir, "sd15.safetensors")
+        if not os.path.exists(model_path):
+            try:
+                print("📥 Downloading SD 1.5 model (3.97GB)...")
+                
+                response = requests.get(
+                    "https://huggingface.co/runwayml/stable-diffusion-v1-5/resolve/main/v1-5-pruned-emaonly.safetensors",
+                    stream=True,
+                    timeout=600
+                )
+                response.raise_for_status()
+                
+                downloaded = 0
+                with open(model_path, 'wb') as f:
+                    for chunk in response.iter_content(chunk_size=1024*1024):  # 1MB chunks
+                        if chunk:
+                            f.write(chunk)
+                            downloaded += len(chunk)
+                            if downloaded % (500*1024*1024) == 0:  # Progress every 500MB
+                                print(f"📊 Downloaded {downloaded // (1024*1024)}MB...")
+                
+                downloads["sd15_model"] = f"✅ Downloaded {os.path.getsize(model_path)} bytes"
+                print("✅ SD 1.5 model downloaded")
+                
+            except Exception as e:
+                downloads["sd15_model"] = f"❌ Failed: {str(e)}"
+        else:
+            downloads["sd15_model"] = "✅ Already exists"
+        
+        # Download Pepe LoRA
+        lora_path = os.path.join(loras_dir, "pepe.safetensors")
         if not os.path.exists(lora_path):
             try:
-                os.makedirs(os.path.dirname(lora_path), exist_ok=True)
-                print("📥 Downloading Pepe LoRA (171MB)...")
+                print("📥 Downloading Pepe LoRA (164MB)...")
                 
                 response = requests.get(
                     "https://huggingface.co/openfree/pepe/resolve/main/pepe.safetensors",
-                    stream=True, timeout=180
+                    stream=True,
+                    timeout=180
                 )
                 response.raise_for_status()
                 
@@ -277,135 +204,222 @@ def redownload_models():
                         if chunk:
                             f.write(chunk)
                 
-                downloads["lora"] = f"✅ Downloaded {os.path.getsize(lora_path)} bytes"
+                downloads["pepe_lora"] = f"✅ Downloaded {os.path.getsize(lora_path)} bytes"
+                print("✅ Pepe LoRA downloaded")
                 
             except Exception as e:
-                downloads["lora"] = f"❌ Failed: {e}"
+                downloads["pepe_lora"] = f"❌ Failed: {str(e)}"
         else:
-            downloads["lora"] = "✅ Already exists"
-        
-        # Download model
-        model_path = "/app/comfyui/models/checkpoints/sd15.safetensors"
-        if not os.path.exists(model_path):
-            try:
-                os.makedirs(os.path.dirname(model_path), exist_ok=True)
-                print("📥 Downloading SD 1.5 model (4.2GB)... This will take a while...")
-                
-                response = requests.get(
-                    "https://huggingface.co/runwayml/stable-diffusion-v1-5/resolve/main/v1-5-pruned-emaonly.safetensors",
-                    stream=True, timeout=600
-                )
-                response.raise_for_status()
-                
-                downloaded = 0
-                with open(model_path, 'wb') as f:
-                    for chunk in response.iter_content(chunk_size=1024*1024):
-                        if chunk:
-                            f.write(chunk)
-                            downloaded += len(chunk)
-                            if downloaded % (200*1024*1024) == 0:  # Progress every 200MB
-                                print(f"📊 Model download: {downloaded // (1024*1024)}MB...")
-                
-                downloads["model"] = f"✅ Downloaded {os.path.getsize(model_path)} bytes"
-                
-            except Exception as e:
-                downloads["model"] = f"❌ Failed: {e}"
-        else:
-            downloads["model"] = "✅ Already exists"
+            downloads["pepe_lora"] = "✅ Already exists"
         
         return downloads
         
     except Exception as e:
         return {"error": str(e)}
 
-def comprehensive_final_test():
-    """Final comprehensive test of everything"""
+def test_comfyui_fresh():
+    """Test ComfyUI in fresh environment"""
     try:
-        print("🏁 Final comprehensive test...")
+        print("🧪 Testing ComfyUI fresh installation...")
         
-        results = {
-            "cuda_libraries": test_cuda_libraries(),
-            "pytorch": {},
-            "comfyui": {},
-            "files": {},
-            "summary": {}
-        }
+        comfyui_path = "/workspace/comfyui"
         
-        # Test PyTorch
+        # Test imports
+        original_cwd = os.getcwd()
+        os.chdir(comfyui_path)
+        
+        # Add to Python path
+        sys.path.insert(0, comfyui_path)
+        
+        test_results = {}
+        
+        # Test core imports
+        imports_to_test = [
+            "comfy.utils",
+            "comfy.model_management", 
+            "nodes",
+            "execution"
+        ]
+        
+        for import_name in imports_to_test:
+            try:
+                __import__(import_name)
+                test_results[import_name] = "✅ Import successful"
+            except Exception as e:
+                test_results[import_name] = f"❌ {str(e)[:100]}"
+        
+        # Test GPU model loading capability
         try:
-            import torch
-            results["pytorch"] = {
-                "version": torch.__version__,
-                "cuda_available": torch.cuda.is_available(),
-                "device_count": torch.cuda.device_count()
-            }
+            import comfy.model_management as model_management
             
-            if torch.cuda.is_available():
-                results["pytorch"]["device_name"] = torch.cuda.get_device_name(0)
-                try:
-                    # Test GPU operation
-                    test_tensor = torch.randn(100, 100).cuda()
-                    results["pytorch"]["gpu_test"] = "✅ GPU tensor creation works"
-                except Exception as e:
-                    results["pytorch"]["gpu_test"] = f"❌ GPU tensor failed: {e}"
+            # Check if GPU is being detected properly
+            device = model_management.get_torch_device()
+            test_results["gpu_device"] = f"✅ Device: {device}"
             
         except Exception as e:
-            results["pytorch"] = {"error": str(e)}
+            test_results["gpu_device"] = f"❌ {str(e)}"
         
-        # Test ComfyUI imports
-        try:
-            os.chdir("/app/comfyui")
-            
-            comfyui_tests = ["comfy.utils", "nodes", "execution"]
-            results["comfyui"] = {}
-            
-            for test in comfyui_tests:
-                try:
-                    __import__(test)
-                    results["comfyui"][test] = "✅ Import successful"
-                except Exception as e:
-                    results["comfyui"][test] = f"❌ {str(e)[:100]}"
-            
-        except Exception as e:
-            results["comfyui"] = {"error": str(e)}
+        os.chdir(original_cwd)
         
-        # Test files
-        files_to_check = {
-            "lora": "/app/comfyui/models/loras/pepe.safetensors",
-            "model": "/app/comfyui/models/checkpoints/sd15.safetensors"
+        successful_imports = sum(1 for result in test_results.values() if result.startswith("✅"))
+        total_imports = len(test_results)
+        
+        return {
+            "results": test_results,
+            "success_rate": f"{successful_imports}/{total_imports}",
+            "ready": successful_imports >= 3
         }
-        
-        results["files"] = {}
-        for name, path in files_to_check.items():
-            if os.path.exists(path):
-                results["files"][name] = f"✅ {os.path.getsize(path)} bytes"
-            else:
-                results["files"][name] = "❌ Missing"
-        
-        # Calculate summary
-        cuda_ok = results["cuda_libraries"].get("success", False)
-        pytorch_ok = results["pytorch"].get("cuda_available", False)
-        comfyui_ok = sum(1 for r in results["comfyui"].values() if isinstance(r, str) and r.startswith("✅")) >= 2
-        files_ok = all(r.startswith("✅") for r in results["files"].values())
-        
-        results["summary"] = {
-            "cuda_libraries": cuda_ok,
-            "pytorch_gpu": pytorch_ok,
-            "comfyui_imports": comfyui_ok,
-            "files_ready": files_ok,
-            "overall_ready": cuda_ok and pytorch_ok and comfyui_ok and files_ok,
-            "readiness_score": sum([cuda_ok, pytorch_ok, comfyui_ok, files_ok])
-        }
-        
-        return results
         
     except Exception as e:
-        return {"error": str(e)}
+        return {"error": str(e), "ready": False}
+
+def start_comfyui_fresh():
+    """Start ComfyUI server in fresh environment"""
+    try:
+        print("🚀 Starting ComfyUI server in fresh environment...")
+        
+        comfyui_path = "/workspace/comfyui"
+        
+        # Kill any existing processes
+        try:
+            subprocess.run(["pkill", "-f", "main.py"], check=False)
+            time.sleep(3)
+        except:
+            pass
+        
+        # Set up environment
+        env = os.environ.copy()
+        env["CUDA_VISIBLE_DEVICES"] = "0"
+        env["PYTHONPATH"] = comfyui_path
+        
+        # Start server
+        cmd = [
+            sys.executable, "main.py",
+            "--listen", "0.0.0.0",
+            "--port", "8188"
+        ]
+        
+        print(f"🔧 Starting: {' '.join(cmd)}")
+        print(f"📁 Working dir: {comfyui_path}")
+        
+        process = subprocess.Popen(
+            cmd,
+            cwd=comfyui_path,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True
+        )
+        
+        # Wait for startup
+        for i in range(60):
+            try:
+                response = requests.get("http://localhost:8188/", timeout=3)
+                if response.status_code == 200:
+                    print("✅ ComfyUI server started successfully!")
+                    return True, f"Server running (PID: {process.pid})"
+            except:
+                pass
+            
+            # Check for crash
+            if process.poll() is not None:
+                stdout, stderr = process.communicate()
+                return False, f"Server crashed: {stderr.decode()[:300]}"
+            
+            if i % 10 == 0:
+                print(f"⏳ Starting server... ({i}/60)")
+            
+            time.sleep(1)
+        
+        return False, "Server startup timeout"
+        
+    except Exception as e:
+        return False, f"Server start failed: {str(e)}"
+
+def create_test_workflow():
+    """Create a test workflow for Pepe generation"""
+    try:
+        workflow = {
+            "1": {
+                "inputs": {"ckpt_name": "sd15.safetensors"},
+                "class_type": "CheckpointLoaderSimple"
+            },
+            "2": {
+                "inputs": {
+                    "text": "pepe the frog, high quality, detailed, cartoon style, green frog",
+                    "clip": ["1", 1]
+                },
+                "class_type": "CLIPTextEncode"
+            },
+            "3": {
+                "inputs": {
+                    "text": "blurry, low quality, distorted",
+                    "clip": ["1", 1]
+                },
+                "class_type": "CLIPTextEncode"
+            },
+            "4": {
+                "inputs": {
+                    "width": 512,
+                    "height": 512,
+                    "batch_size": 1
+                },
+                "class_type": "EmptyLatentImage"
+            },
+            "5": {
+                "inputs": {
+                    "seed": 123456,
+                    "steps": 25,
+                    "cfg": 7.5,
+                    "sampler_name": "euler",
+                    "scheduler": "normal",
+                    "denoise": 1.0,
+                    "model": ["1", 0],
+                    "positive": ["2", 0],
+                    "negative": ["3", 0],
+                    "latent_image": ["4", 0]
+                },
+                "class_type": "KSampler"
+            },
+            "6": {
+                "inputs": {
+                    "samples": ["5", 0],
+                    "vae": ["1", 2]
+                },
+                "class_type": "VAEDecode"
+            },
+            "7": {
+                "inputs": {
+                    "filename_prefix": "fresh_pepe",
+                    "images": ["6", 0]
+                },
+                "class_type": "SaveImage"
+            }
+        }
+        
+        # Test the workflow
+        try:
+            response = requests.post(
+                "http://localhost:8188/prompt",
+                json={"prompt": workflow},
+                timeout=10
+            )
+            
+            if response.status_code == 200:
+                return True, f"Test workflow queued: {response.json()}"
+            else:
+                return False, f"Workflow failed: {response.status_code}"
+                
+        except Exception as e:
+            return False, f"Workflow test failed: {str(e)}"
+        
+    except Exception as e:
+        return False, f"Workflow creation failed: {str(e)}"
 
 def handler(event):
-    """CUDA Library Fix Handler"""
-    print("🐸 PEPE WORKER v7.0 - CUDA LIBRARY SURGEON! 🔧")
-    print("🎯 Fixing libcublas and CUDA libraries...")
+    """Fresh container setup handler"""
+    print("🐸 PEPE WORKER v9.0 - FRESH START! 🌟")
+    print("✨ Setting up everything from scratch on clean container...")
     
     try:
         input_data = event.get('input', {})
@@ -413,52 +427,76 @@ def handler(event):
         
         print(f"📝 Processing: {prompt}")
         
-        # Step 1: Fix CUDA libraries
-        print("🔄 Step 1: Fixing CUDA libraries...")
-        cuda_fix = fix_cuda_libraries()
+        # Step 1: Verify fresh environment
+        print("🔄 Step 1: Verifying fresh environment...")
+        env_check = verify_fresh_environment()
         
-        # Step 2: Install PyTorch with fixed CUDA
-        print("🔄 Step 2: Installing PyTorch with CUDA...")
-        pytorch_success, pytorch_msg = install_pytorch_with_cuda_fix()
+        # Step 2: Install ComfyUI
+        print("🔄 Step 2: Installing ComfyUI...")
+        comfyui_success, comfyui_msg = install_comfyui_fresh()
         
-        # Step 3: Re-download wiped models
-        print("🔄 Step 3: Re-downloading models...")
-        model_downloads = redownload_models()
+        # Step 3: Download models
+        print("🔄 Step 3: Downloading models...")
+        model_downloads = download_models_fresh()
         
-        # Step 4: Final comprehensive test
-        print("🔄 Step 4: Final system test...")
-        final_test = comprehensive_final_test()
+        # Step 4: Test ComfyUI
+        print("🔄 Step 4: Testing ComfyUI...")
+        comfyui_test = test_comfyui_fresh()
+        
+        # Step 5: Start server
+        server_success = False
+        server_msg = "Not attempted"
+        
+        if comfyui_success and comfyui_test.get("ready"):
+            print("🔄 Step 5: Starting server...")
+            server_success, server_msg = start_comfyui_fresh()
+        
+        # Step 6: Test workflow if server is running
+        workflow_success = False
+        workflow_msg = "Not attempted"
+        
+        if server_success:
+            print("🔄 Step 6: Testing workflow...")
+            workflow_success, workflow_msg = create_test_workflow()
         
         return {
-            "message": f"🐸 CUDA Library Surgery: {prompt}",
-            "status": "success" if final_test.get("summary", {}).get("overall_ready") else "surgery_in_progress",
-            "cuda_fix": cuda_fix,
-            "pytorch": {
-                "success": pytorch_success,
-                "message": pytorch_msg
+            "message": f"🐸 FRESH START Pepe setup: {prompt}",
+            "status": "success" if workflow_success else "fresh_setup_in_progress",
+            "environment_check": env_check,
+            "comfyui_installation": {
+                "success": comfyui_success,
+                "message": comfyui_msg
             },
             "model_downloads": model_downloads,
-            "final_test": final_test,
-            "ready_for_generation": final_test.get("summary", {}).get("overall_ready", False),
-            "readiness_score": f"{final_test.get('summary', {}).get('readiness_score', 0)}/4",
-            "surgery_report": [
-                f"🔧 CUDA Libraries: {'FIXED' if cuda_fix.get('success') else 'FAILED'}",
-                f"🚀 PyTorch GPU: {'WORKING' if pytorch_success else 'FAILED'}",
-                f"📥 Models: {'DOWNLOADED' if all(r.startswith('✅') for r in model_downloads.values() if isinstance(r, str)) else 'MISSING'}",
-                f"💻 ComfyUI: {'READY' if final_test.get('summary', {}).get('comfyui_imports') else 'BROKEN'}",
-                f"🎯 {'PEPE GENERATION READY!' if final_test.get('summary', {}).get('overall_ready') else 'STILL PERFORMING SURGERY...'}"
+            "comfyui_test": comfyui_test,
+            "server": {
+                "success": server_success,
+                "message": server_msg
+            },
+            "workflow_test": {
+                "success": workflow_success,
+                "message": workflow_msg
+            },
+            "ready_for_generation": workflow_success,
+            "fresh_setup_report": [
+                f"🌟 Environment: {'READY' if env_check.get('overall_health', {}).get('ready_for_setup') else 'ISSUES'}",
+                f"📦 ComfyUI: {'INSTALLED' if comfyui_success else 'FAILED'}",
+                f"📥 Models: {'DOWNLOADED' if all('✅' in str(v) for v in model_downloads.values() if isinstance(v, str)) else 'MISSING'}",
+                f"🧪 Tests: {'PASSED' if comfyui_test.get('ready') else 'FAILED'}",
+                f"🚀 Server: {'RUNNING' if server_success else 'FAILED'}",
+                f"🎯 {'PEPE GENERATOR READY!' if workflow_success else 'FRESH SETUP CONTINUING...'}"
             ],
-            "next_operation": "START PEPE SERVER" if final_test.get("summary", {}).get("overall_ready") else "CONTINUE CUDA SURGERY"
+            "installation_path": "/workspace/comfyui"
         }
         
     except Exception as e:
         return {
             "error": str(e),
-            "status": "surgery_failed",
-            "debug": "CUDA surgery exception"
+            "status": "fresh_setup_failed",
+            "debug": "Fresh setup exception"
         }
 
 if __name__ == '__main__':
-    print("🚀 Starting CUDA Library Surgeon v7.0...")
-    print("🔧 Operating on libcublas.so...")
+    print("🚀 Starting FRESH Container Pepe Worker v9.0...")
+    print("🌟 Clean slate setup with proper GPU support!")
     runpod.serverless.start({'handler': handler})
