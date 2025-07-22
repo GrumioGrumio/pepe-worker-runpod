@@ -1,107 +1,78 @@
 import runpod
 import os
-import json
-import base64
 import requests
 import time
-import subprocess
-import threading
 
-def start_comfyui_server():
-    """Start ComfyUI server in background"""
+def download_pepe_lora():
+    """Download Pepe LoRA at runtime if missing"""
+    lora_path = "/app/comfyui/models/loras/pepe.safetensors"
+    
+    if os.path.exists(lora_path):
+        return True, f"LoRA already exists ({os.path.getsize(lora_path)} bytes)"
+    
     try:
-        print("🚀 Starting ComfyUI server...")
-        # Start ComfyUI server
-        process = subprocess.Popen([
-            "python", "/app/comfyui/main.py", 
-            "--listen", "0.0.0.0", 
-            "--port", "8188",
-            "--disable-auto-launch"
-        ], cwd="/app/comfyui")
+        print("📥 Downloading Pepe LoRA...")
+        url = "https://huggingface.co/openfree/pepe/resolve/main/pepe.safetensors"
         
-        # Give it time to start
-        time.sleep(20)
-        print("✅ ComfyUI server should be running")
-        return process
+        response = requests.get(url, timeout=60)
+        response.raise_for_status()
+        
+        with open(lora_path, 'wb') as f:
+            f.write(response.content)
+        
+        size = os.path.getsize(lora_path)
+        print(f"✅ LoRA downloaded: {size} bytes")
+        return True, f"Downloaded successfully ({size} bytes)"
+        
     except Exception as e:
-        print(f"❌ ComfyUI server error: {e}")
-        return None
-
-def create_simple_pepe_workflow(prompt):
-    """Create a simple workflow for Pepe generation"""
-    return {
-        "3": {
-            "inputs": {
-                "seed": int(time.time()),
-                "steps": 8,  # Fast generation
-                "cfg": 1.0,  # Simple settings
-                "sampler_name": "euler",
-                "scheduler": "simple",
-                "denoise": 1.0,
-                "model": ["4", 0],
-                "positive": ["6", 0],
-                "negative": ["7", 0],
-                "latent_image": ["5", 0]
-            },
-            "class_type": "KSampler"
-        },
-        "4": {
-            "inputs": {
-                "ckpt_name": "flux1-schnell.safetensors"  # We'll add this
-            },
-            "class_type": "CheckpointLoaderSimple"
-        },
-        "5": {
-            "inputs": {
-                "width": 1024,
-                "height": 1024,
-                "batch_size": 1
-            },
-            "class_type": "EmptyLatentImage"
-        },
-        "6": {
-            "inputs": {
-                "text": f"{prompt}, pepe the frog, meme style",
-                "clip": ["4", 1]
-            },
-            "class_type": "CLIPTextEncode"
-        },
-        "7": {
-            "inputs": {
-                "text": "blurry, low quality",
-                "clip": ["4", 1]
-            },
-            "class_type": "CLIPTextEncode"
-        },
-        "8": {
-            "inputs": {
-                "samples": ["3", 0],
-                "vae": ["4", 2]
-            },
-            "class_type": "VAEDecode"
-        },
-        "9": {
-            "inputs": {
-                "filename_prefix": "pepe_generation",
-                "images": ["8", 0]
-            },
-            "class_type": "SaveImage"
-        }
-    }
+        print(f"❌ LoRA download failed: {e}")
+        return False, f"Download failed: {str(e)}"
 
 def handler(event):
-    """REAL Pepe generation handler"""
-    print("🐸 REAL Pepe Generation Worker!")
+    """Pepe generation with runtime LoRA download"""
+    print("🐸 Pepe Worker v4 - Runtime LoRA Download")
     
     try:
         input_data = event.get('input', {})
         prompt = input_data.get('prompt', 'pepe the frog')
         
-        print(f"📝 Generating Pepe: {prompt}")
+        print(f"📝 Processing: {prompt}")
         
-        # Check if we have everything needed
-        lora_exists = os.path.exists("/app/comfyui/models/loras/pepe.safetensors")
-        comfyui_exists = os.path.exists("/app/comfyui/main.py")
+        # Check/download LoRA at runtime
+        lora_success, lora_msg = download_pepe_lora()
         
-        if not lora_exists or not comfyui_exists:
-            return {
+        # Check ComfyUI
+        comfyui_ready = os.path.exists('/app/comfyui/main.py')
+        
+        diagnostics = {
+            "comfyui_ready": comfyui_ready,
+            "lora_status": lora_msg,
+            "lora_download_success": lora_success,
+            "working_directory": os.getcwd(),
+            "models_available": os.listdir('/app/comfyui/models') if os.path.exists('/app/comfyui/models') else []
+        }
+        
+        if comfyui_ready and lora_success:
+            status_msg = "🎉 ComfyUI + Pepe LoRA ready! Ready for FLUX model"
+            next_step = "Add FLUX model and start real generation"
+        else:
+            status_msg = "⚠️ Setup incomplete"
+            next_step = "Fix missing components"
+        
+        return {
+            "message": f"Runtime setup: {prompt}",
+            "status": "success",
+            "diagnostics": diagnostics,
+            "status_msg": status_msg,
+            "next_step": next_step
+        }
+        
+    except Exception as e:
+        return {
+            "error": str(e),
+            "status": "failed"
+        }
+
+if __name__ == '__main__':
+    print("🚀 Starting Pepe Worker with Runtime Setup...")
+    runpod.serverless.start({'handler': handler})
