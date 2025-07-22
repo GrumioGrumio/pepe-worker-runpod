@@ -1,25 +1,47 @@
-# Use official RunPod ComfyUI image as base
-FROM runpod/worker-comfyui:dev-cuda12.1
+# Use Python base with CUDA support
+FROM nvidia/cuda:11.8-devel-ubuntu22.04
+
+# Set environment variables
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    python3 \
+    python3-pip \
+    git \
+    wget \
+    curl \
+    unzip \
+    && rm -rf /var/lib/apt/lists/*
 
 # Set working directory
-WORKDIR /comfyui
+WORKDIR /app
 
-# Install additional dependencies
-RUN pip install runpod requests pillow websocket-client
+# Install Python packages
+RUN pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+RUN pip3 install runpod requests pillow websocket-client
 
-# Download Pepe LoRA to the correct location
-RUN cd /comfyui/models/loras && \
+# Clone ComfyUI
+RUN git clone https://github.com/comfyanonymous/ComfyUI.git /app/comfyui
+WORKDIR /app/comfyui
+
+# Install ComfyUI requirements
+RUN pip3 install -r requirements.txt
+
+# Create model directories
+RUN mkdir -p models/checkpoints models/loras models/vae
+
+# Download Pepe LoRA
+RUN cd models/loras && \
     wget -O pepe.safetensors "https://huggingface.co/openfree/pepe/resolve/main/pepe.safetensors"
 
-# Verify LoRA downloaded
-RUN ls -la /comfyui/models/loras/
-
-# Copy our handler
-COPY rp_handler.py /comfyui/
-COPY start_worker.py /comfyui/
+# Copy our handler files
+COPY rp_handler.py /app/
+COPY start_worker.py /app/
 
 # Expose ports
 EXPOSE 8188 8080
 
 # Start the worker
-CMD ["python", "start_worker.py"]
+CMD ["python3", "/app/start_worker.py"]
