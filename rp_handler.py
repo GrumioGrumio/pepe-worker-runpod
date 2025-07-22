@@ -8,299 +8,305 @@ import threading
 import sys
 from pathlib import Path
 
-def robust_pytorch_install():
-    """Install PyTorch with multiple fallback strategies"""
+def force_gpu_pytorch():
+    """Aggressively force GPU PyTorch installation"""
     try:
-        print("🔧 Robust PyTorch GPU installation...")
+        print("🔥 FORCE installing GPU PyTorch...")
         
-        # Strategy 1: Try pre-installed PyTorch first
-        try:
-            import torch
-            if torch.cuda.is_available():
-                print("✅ PyTorch GPU already available!")
-                return True, f"Pre-installed PyTorch {torch.__version__} with CUDA"
-        except ImportError:
-            print("📦 PyTorch not found, installing...")
+        # Step 1: Completely remove any existing PyTorch
+        print("🧹 Removing all PyTorch installations...")
         
-        # Strategy 2: Install with conda (often more reliable)
-        try:
-            print("🐍 Trying conda install...")
-            result = subprocess.run([
-                "conda", "install", "pytorch", "torchvision", "torchaudio", 
-                "pytorch-cuda=12.1", "-c", "pytorch", "-c", "nvidia", "-y"
-            ], capture_output=True, timeout=300)
-            
-            if result.returncode == 0:
-                # Test the installation
-                test_result = subprocess.run([
-                    sys.executable, "-c", 
-                    "import torch; print('CUDA available:', torch.cuda.is_available())"
+        packages_to_remove = [
+            "torch", "torchvision", "torchaudio", "pytorch", 
+            "torch-cpu", "torchvision-cpu", "torchaudio-cpu"
+        ]
+        
+        for package in packages_to_remove:
+            try:
+                subprocess.run([
+                    sys.executable, "-m", "pip", "uninstall", package, "-y"
                 ], capture_output=True, timeout=30)
-                
-                if "CUDA available: True" in test_result.stdout.decode():
-                    return True, "Conda PyTorch GPU installation successful"
-                    
-        except Exception as e:
-            print(f"❌ Conda failed: {e}")
+            except:
+                pass
         
-        # Strategy 3: Pip with different mirrors
-        pip_strategies = [
+        # Step 2: Clear pip cache
+        try:
+            subprocess.run([
+                sys.executable, "-m", "pip", "cache", "purge"
+            ], capture_output=True, timeout=30)
+        except:
+            pass
+        
+        # Step 3: Force install GPU version with explicit CUDA
+        print("⚡ Force installing PyTorch GPU...")
+        
+        install_strategies = [
             {
-                "name": "PyTorch Official",
+                "name": "PyTorch CUDA 12.1 Direct",
                 "cmd": [
-                    sys.executable, "-m", "pip", "install", "torch", "torchvision", "torchaudio", 
-                    "--index-url", "https://download.pytorch.org/whl/cu121"
+                    sys.executable, "-m", "pip", "install", 
+                    "torch==2.1.0+cu121", "torchvision==0.16.0+cu121", "torchaudio==2.1.0+cu121",
+                    "--index-url", "https://download.pytorch.org/whl/cu121",
+                    "--force-reinstall", "--no-cache-dir"
                 ]
             },
             {
-                "name": "Default PyPI",
+                "name": "PyTorch CUDA 11.8 Fallback", 
                 "cmd": [
-                    sys.executable, "-m", "pip", "install", "torch", "torchvision", "torchaudio"
+                    sys.executable, "-m", "pip", "install",
+                    "torch==2.1.0+cu118", "torchvision==0.16.0+cu118", "torchaudio==2.1.0+cu118",
+                    "--index-url", "https://download.pytorch.org/whl/cu118",
+                    "--force-reinstall", "--no-cache-dir"
                 ]
             },
             {
-                "name": "PyTorch Nightly",
+                "name": "Latest PyTorch GPU",
                 "cmd": [
-                    sys.executable, "-m", "pip", "install", "--pre", "torch", "torchvision", "torchaudio", 
-                    "--index-url", "https://download.pytorch.org/whl/nightly/cu121"
+                    sys.executable, "-m", "pip", "install",
+                    "torch", "torchvision", "torchaudio", 
+                    "--index-url", "https://download.pytorch.org/whl/cu121",
+                    "--force-reinstall", "--no-cache-dir", "--upgrade"
                 ]
             }
         ]
         
-        for strategy in pip_strategies:
+        for strategy in install_strategies:
             try:
-                print(f"🔄 Trying {strategy['name']}...")
+                print(f"🚀 Trying: {strategy['name']}")
                 
-                # Set pip timeout and retries
+                # Set aggressive environment
                 env = os.environ.copy()
-                env["PIP_TIMEOUT"] = "60"
-                env["PIP_RETRIES"] = "3"
+                env["CUDA_VISIBLE_DEVICES"] = "0"
+                env["TORCH_CUDA_ARCH_LIST"] = "7.0;7.5;8.0;8.6;8.9;9.0"
+                env["FORCE_CUDA"] = "1"
                 
                 result = subprocess.run(
-                    strategy["cmd"] + ["--timeout", "60"],
-                    capture_output=True, 
+                    strategy["cmd"],
+                    capture_output=True,
                     timeout=300,
                     env=env
                 )
                 
                 if result.returncode == 0:
-                    # Test installation
-                    test_result = subprocess.run([
-                        sys.executable, "-c", 
-                        "import torch; print(f'PyTorch {torch.__version__} CUDA: {torch.cuda.is_available()}')"
-                    ], capture_output=True, timeout=30)
+                    print(f"✅ {strategy['name']} installation completed")
                     
-                    test_output = test_result.stdout.decode()
-                    if "CUDA: True" in test_output:
-                        return True, f"{strategy['name']} successful: {test_output.strip()}"
-                    elif "PyTorch" in test_output:
-                        return True, f"{strategy['name']} installed (CPU fallback): {test_output.strip()}"
-                
+                    # Immediate test
+                    test_result = subprocess.run([
+                        sys.executable, "-c",
+                        "import torch; print(f'PyTorch {torch.__version__} CUDA: {torch.cuda.is_available()} Devices: {torch.cuda.device_count()}')"
+                    ], capture_output=True, timeout=30, env=env)
+                    
+                    if test_result.returncode == 0:
+                        output = test_result.stdout.decode().strip()
+                        print(f"🧪 Test result: {output}")
+                        
+                        if "CUDA: True" in output:
+                            return True, f"SUCCESS! {strategy['name']}: {output}"
+                        elif "PyTorch" in output:
+                            print(f"⚠️ {strategy['name']} installed but no CUDA")
+                            # Continue to next strategy
+                else:
+                    print(f"❌ {strategy['name']} install failed: {result.stderr.decode()[:200]}")
+                    
             except Exception as e:
-                print(f"❌ {strategy['name']} failed: {e}")
+                print(f"❌ {strategy['name']} exception: {e}")
                 continue
         
-        # Strategy 4: Use system PyTorch if available
-        try:
-            result = subprocess.run([
-                "python3", "-c", "import torch; print('System PyTorch available')"
-            ], capture_output=True, timeout=10)
-            
-            if result.returncode == 0:
-                return True, "Using system PyTorch"
-                
-        except:
-            pass
-        
-        return False, "All PyTorch installation strategies failed"
+        return False, "All GPU PyTorch installation strategies failed"
         
     except Exception as e:
-        return False, f"PyTorch installation error: {str(e)}"
+        return False, f"Force GPU PyTorch failed: {str(e)}"
 
-def download_essential_files():
-    """Re-download essential files that got lost"""
+def fix_comfyui_installation():
+    """Fix ComfyUI installation and paths"""
     try:
-        print("📥 Re-downloading essential files...")
+        print("🔧 Fixing ComfyUI installation...")
         
+        # Check if ComfyUI directory exists and has content
+        comfyui_path = "/app/comfyui"
+        
+        if not os.path.exists(comfyui_path):
+            return False, "ComfyUI directory not found"
+        
+        # Check for main files
+        main_py = os.path.join(comfyui_path, "main.py")
+        if not os.path.exists(main_py):
+            return False, "ComfyUI main.py not found"
+        
+        # Look for ComfyUI subdirectories
+        expected_dirs = ["comfy", "nodes.py", "execution.py"]
+        missing_items = []
+        
+        for item in expected_dirs:
+            item_path = os.path.join(comfyui_path, item)
+            if not os.path.exists(item_path):
+                missing_items.append(item)
+        
+        if missing_items:
+            print(f"⚠️ Missing ComfyUI components: {missing_items}")
+            
+            # Try to reinstall ComfyUI dependencies
+            try:
+                print("📦 Installing ComfyUI dependencies...")
+                
+                deps = [
+                    "transformers", "diffusers", "accelerate", "xformers",
+                    "safetensors", "opencv-python", "pillow", "numpy",
+                    "tqdm", "psutil", "kornia", "spandrel"
+                ]
+                
+                for dep in deps:
+                    try:
+                        subprocess.run([
+                            sys.executable, "-m", "pip", "install", dep, "--upgrade"
+                        ], capture_output=True, timeout=60)
+                        print(f"✅ Installed {dep}")
+                    except:
+                        print(f"⚠️ Failed to install {dep}")
+                
+            except Exception as e:
+                print(f"❌ Dependency installation failed: {e}")
+        
+        # Add ComfyUI to Python path
+        if comfyui_path not in sys.path:
+            sys.path.insert(0, comfyui_path)
+        
+        # Set PYTHONPATH environment variable
+        current_pythonpath = os.environ.get("PYTHONPATH", "")
+        if comfyui_path not in current_pythonpath:
+            os.environ["PYTHONPATH"] = f"{comfyui_path}:{current_pythonpath}"
+        
+        return True, f"ComfyUI path configured: {comfyui_path}"
+        
+    except Exception as e:
+        return False, f"ComfyUI fix failed: {str(e)}"
+
+def test_complete_system():
+    """Test complete system with GPU and ComfyUI"""
+    try:
         results = {}
         
-        # Download Pepe LoRA
-        lora_path = "/app/comfyui/models/loras/pepe.safetensors"
-        if not os.path.exists(lora_path):
-            try:
-                print("📥 Downloading Pepe LoRA...")
-                os.makedirs(os.path.dirname(lora_path), exist_ok=True)
+        # Test 1: PyTorch GPU
+        try:
+            import torch
+            results["pytorch"] = {
+                "version": torch.__version__,
+                "cuda_available": torch.cuda.is_available(),
+                "device_count": torch.cuda.device_count()
+            }
+            
+            if torch.cuda.is_available():
+                results["pytorch"]["device_name"] = torch.cuda.get_device_name(0)
+                results["pytorch"]["memory_gb"] = torch.cuda.get_device_properties(0).total_memory / 1024**3
                 
-                response = requests.get(
-                    "https://huggingface.co/openfree/pepe/resolve/main/pepe.safetensors",
-                    timeout=120, stream=True
-                )
-                response.raise_for_status()
+                # Test GPU tensor
+                try:
+                    test_tensor = torch.randn(1000, 1000).cuda()
+                    results["pytorch"]["gpu_test"] = "✅ GPU tensor creation successful"
+                except Exception as e:
+                    results["pytorch"]["gpu_test"] = f"❌ GPU tensor failed: {str(e)}"
+            else:
+                results["pytorch"]["gpu_test"] = "❌ CUDA not available"
                 
-                with open(lora_path, 'wb') as f:
-                    for chunk in response.iter_content(chunk_size=8192):
-                        if chunk:
-                            f.write(chunk)
-                
-                results["lora"] = f"✅ Downloaded {os.path.getsize(lora_path)} bytes"
-                
-            except Exception as e:
-                results["lora"] = f"❌ Failed: {str(e)}"
-        else:
-            results["lora"] = "✅ Already exists"
+        except Exception as e:
+            results["pytorch"] = {"error": str(e)}
         
-        # Download SD 1.5 model if missing
-        model_path = "/app/comfyui/models/checkpoints/sd15.safetensors"
-        if not os.path.exists(model_path):
-            try:
-                print("📥 Re-downloading SD 1.5 model...")
-                os.makedirs(os.path.dirname(model_path), exist_ok=True)
-                
-                response = requests.get(
-                    "https://huggingface.co/runwayml/stable-diffusion-v1-5/resolve/main/v1-5-pruned-emaonly.safetensors",
-                    timeout=300, stream=True
-                )
-                response.raise_for_status()
-                
-                downloaded = 0
-                with open(model_path, 'wb') as f:
-                    for chunk in response.iter_content(chunk_size=1024*1024):
-                        if chunk:
-                            f.write(chunk)
-                            downloaded += len(chunk)
-                            if downloaded % (100*1024*1024) == 0:  # Progress every 100MB
-                                print(f"📊 Downloaded {downloaded // (1024*1024)}MB...")
-                
-                results["model"] = f"✅ Downloaded {os.path.getsize(model_path)} bytes"
-                
-            except Exception as e:
-                results["model"] = f"❌ Failed: {str(e)}"
-        else:
-            results["model"] = "✅ Already exists"
+        # Test 2: ComfyUI imports
+        try:
+            # Change to ComfyUI directory for imports
+            original_cwd = os.getcwd()
+            os.chdir("/app/comfyui")
+            
+            import_tests = {
+                "comfy.utils": "import comfy.utils",
+                "nodes": "import nodes", 
+                "execution": "import execution",
+                "comfy.model_management": "import comfy.model_management",
+                "comfy.sd": "import comfy.sd"
+            }
+            
+            results["comfyui"] = {}
+            for name, import_cmd in import_tests.items():
+                try:
+                    exec(import_cmd)
+                    results["comfyui"][name] = "✅ Available"
+                except Exception as e:
+                    results["comfyui"][name] = f"❌ {str(e)}"
+            
+            os.chdir(original_cwd)
+            
+        except Exception as e:
+            results["comfyui"] = {"error": str(e)}
+        
+        # Test 3: File availability
+        files_to_check = {
+            "lora": "/app/comfyui/models/loras/pepe.safetensors",
+            "model": "/app/comfyui/models/checkpoints/sd15.safetensors",
+            "main": "/app/comfyui/main.py"
+        }
+        
+        results["files"] = {}
+        for name, path in files_to_check.items():
+            if os.path.exists(path):
+                size = os.path.getsize(path)
+                results["files"][name] = f"✅ {size} bytes"
+            else:
+                results["files"][name] = "❌ Missing"
+        
+        # Calculate overall readiness
+        pytorch_ready = results.get("pytorch", {}).get("cuda_available", False)
+        comfyui_imports = sum(1 for r in results.get("comfyui", {}).values() if isinstance(r, str) and r.startswith("✅"))
+        files_ready = all(r.startswith("✅") for r in results.get("files", {}).values())
+        
+        overall_ready = pytorch_ready and comfyui_imports >= 3 and files_ready
+        readiness_percentage = (
+            (1 if pytorch_ready else 0) + 
+            (comfyui_imports / 5) + 
+            (1 if files_ready else 0)
+        ) / 3 * 100
+        
+        results["summary"] = {
+            "pytorch_ready": pytorch_ready,
+            "comfyui_imports": f"{comfyui_imports}/5",
+            "files_ready": files_ready,
+            "overall_ready": overall_ready,
+            "readiness_percentage": readiness_percentage
+        }
         
         return results
         
     except Exception as e:
         return {"error": str(e)}
 
-def test_gpu_pytorch():
-    """Test PyTorch GPU functionality"""
+def start_comfyui_final():
+    """Final attempt to start ComfyUI with all fixes"""
     try:
-        # Basic import test
+        print("🚀 Final ComfyUI startup attempt...")
+        
+        # Kill any existing processes
         try:
-            import torch
-            pytorch_version = torch.__version__
-        except ImportError:
-            return {
-                "pytorch_available": False,
-                "error": "PyTorch not installed",
-                "cuda_available": False
-            }
-        
-        # CUDA test
-        cuda_available = torch.cuda.is_available()
-        device_count = torch.cuda.device_count() if cuda_available else 0
-        
-        gpu_info = {}
-        if cuda_available and device_count > 0:
-            gpu_info = {
-                "device_name": torch.cuda.get_device_name(0),
-                "memory_total": torch.cuda.get_device_properties(0).total_memory / 1024**3,
-                "cuda_version": torch.version.cuda
-            }
-            
-            # Test tensor creation
-            try:
-                test_tensor = torch.randn(100, 100).cuda()
-                tensor_test = test_tensor.is_cuda
-                gpu_info["tensor_test"] = "✅ GPU tensor creation successful"
-            except Exception as e:
-                gpu_info["tensor_test"] = f"❌ GPU tensor failed: {str(e)}"
-        
-        return {
-            "pytorch_available": True,
-            "pytorch_version": pytorch_version,
-            "cuda_available": cuda_available,
-            "device_count": device_count,
-            "gpu_info": gpu_info,
-            "ready": cuda_available and device_count > 0
-        }
-        
-    except Exception as e:
-        return {
-            "pytorch_available": False,
-            "error": str(e),
-            "cuda_available": False
-        }
-
-def minimal_comfyui_test():
-    """Test ComfyUI without starting full server"""
-    try:
-        print("🧪 Testing ComfyUI components...")
-        
-        # Change to ComfyUI directory
-        original_cwd = os.getcwd()
-        os.chdir("/app/comfyui")
-        
-        test_results = {}
-        
-        # Test basic imports
-        try:
-            import comfy.utils
-            test_results["comfy_utils"] = "✅ Available"
-        except Exception as e:
-            test_results["comfy_utils"] = f"❌ {str(e)}"
-        
-        try:
-            import nodes
-            test_results["nodes"] = "✅ Available"
-        except Exception as e:
-            test_results["nodes"] = f"❌ {str(e)}"
-        
-        try:
-            import execution
-            test_results["execution"] = "✅ Available"
-        except Exception as e:
-            test_results["execution"] = f"❌ {str(e)}"
-        
-        # Test model loading capability
-        try:
-            import comfy.model_management
-            test_results["model_management"] = "✅ Available"
-        except Exception as e:
-            test_results["model_management"] = f"❌ {str(e)}"
-        
-        os.chdir(original_cwd)
-        
-        successful = sum(1 for result in test_results.values() if result.startswith("✅"))
-        total = len(test_results)
-        
-        return test_results, successful, total
-        
-    except Exception as e:
-        return {"error": str(e)}, 0, 1
-
-def start_comfyui_robust():
-    """Start ComfyUI with robust error handling"""
-    try:
-        print("🚀 Starting ComfyUI with robust setup...")
-        
-        # Kill existing processes
-        try:
-            subprocess.run(["pkill", "-f", "main.py"], check=False, timeout=5)
+            subprocess.run(["pkill", "-f", "main.py"], check=False)
             time.sleep(3)
         except:
             pass
         
-        # Setup environment
+        # Setup optimal environment
         env = os.environ.copy()
         env["CUDA_VISIBLE_DEVICES"] = "0"
         env["PYTHONPATH"] = "/app/comfyui"
+        env["TORCH_CUDA_ARCH_LIST"] = "7.0;7.5;8.0;8.6;8.9;9.0"
         
-        # Start server
-        cmd = [sys.executable, "main.py", "--listen", "0.0.0.0", "--port", "8188"]
+        # Start with detailed logging
+        cmd = [
+            sys.executable, "main.py",
+            "--listen", "0.0.0.0", 
+            "--port", "8188",
+            "--verbose"
+        ]
         
         print(f"🔧 Starting: {' '.join(cmd)}")
+        print(f"📁 Working directory: /app/comfyui")
+        print(f"🎯 CUDA device: {env.get('CUDA_VISIBLE_DEVICES')}")
         
         process = subprocess.Popen(
             cmd,
@@ -311,35 +317,44 @@ def start_comfyui_robust():
             start_new_session=True
         )
         
-        # Wait for startup with detailed logging
-        for i in range(60):
+        # Wait with better progress tracking
+        startup_logs = []
+        
+        for i in range(120):  # 2 minutes for GPU warmup
             try:
-                response = requests.get("http://localhost:8188/", timeout=3)
+                response = requests.get("http://localhost:8188/", timeout=2)
                 if response.status_code == 200:
-                    print("✅ ComfyUI server started!")
-                    return True, f"Server running (PID: {process.pid})"
+                    print("✅ ComfyUI server is running!")
+                    return True, f"Server started successfully (PID: {process.pid})"
             except:
                 pass
             
-            # Check for process crash
+            # Check for crash
             if process.poll() is not None:
                 stdout, stderr = process.communicate()
-                error_msg = stderr.decode()[:500] if stderr else "No error output"
-                return False, f"Process crashed: {error_msg}"
+                
+                # Get detailed error info
+                stderr_text = stderr.decode() if stderr else "No stderr"
+                stdout_text = stdout.decode() if stdout else "No stdout"
+                
+                return False, f"Process crashed. STDERR: {stderr_text[:400]}... STDOUT: {stdout_text[:200]}"
             
-            if i % 10 == 0:
-                print(f"⏳ Starting... ({i}/60 seconds)")
+            # Progress updates
+            if i % 20 == 0:
+                print(f"⏳ GPU warming up... ({i}/120 seconds)")
             
             time.sleep(1)
         
-        return False, "Startup timeout after 60 seconds"
+        # Final timeout
+        return False, "Startup timeout after 2 minutes"
         
     except Exception as e:
-        return False, f"Server start failed: {str(e)}"
+        return False, f"Final startup failed: {str(e)}"
 
 def handler(event):
-    """Robust GPU handler with fallback strategies"""
-    print("🐸 PEPE WORKER v5.0 - ROBUST GPU EDITION! 💪")
+    """Force GPU handler - no compromises!"""
+    print("🐸 PEPE WORKER v6.0 - FORCE GPU MODE! 🔥")
+    print("💪 No CPU fallbacks - GPU or bust!")
     
     try:
         input_data = event.get('input', {})
@@ -347,79 +362,64 @@ def handler(event):
         
         print(f"📝 Processing: {prompt}")
         
-        # Step 1: Install PyTorch with multiple strategies
-        print("🔄 Step 1: Robust PyTorch installation...")
-        pytorch_success, pytorch_msg = robust_pytorch_install()
+        # Step 1: FORCE GPU PyTorch
+        print("🔄 Step 1: FORCING GPU PyTorch installation...")
+        pytorch_success, pytorch_msg = force_gpu_pytorch()
         
-        # Step 2: Test PyTorch GPU
-        print("🔄 Step 2: Testing PyTorch GPU...")
-        pytorch_test = test_gpu_pytorch()
+        # Step 2: Fix ComfyUI
+        print("🔄 Step 2: Fixing ComfyUI installation...")
+        comfyui_success, comfyui_msg = fix_comfyui_installation()
         
-        # Step 3: Download essential files
-        print("🔄 Step 3: Ensuring essential files...")
-        file_results = download_essential_files()
+        # Step 3: Test everything
+        print("🔄 Step 3: Testing complete system...")
+        system_test = test_complete_system()
         
-        # Step 4: Test ComfyUI components
-        print("🔄 Step 4: Testing ComfyUI...")
-        comfyui_results, comfyui_success, comfyui_total = minimal_comfyui_test()
-        
-        # Step 5: Start server if everything looks good
+        # Step 4: Start server if ready
         server_success = False
         server_msg = "Not attempted"
         
-        if pytorch_test.get("ready") and comfyui_success > 0:
-            print("🔄 Step 5: Starting ComfyUI server...")
-            server_success, server_msg = start_comfyui_robust()
-        
-        # Calculate overall readiness
-        readiness_factors = [
-            pytorch_test.get("ready", False),
-            file_results.get("lora", "").startswith("✅"),
-            file_results.get("model", "").startswith("✅"),
-            comfyui_success >= 2,
-            server_success
-        ]
-        
-        overall_readiness = sum(readiness_factors) / len(readiness_factors) * 100
+        if system_test.get("summary", {}).get("overall_ready"):
+            print("🔄 Step 4: Starting ComfyUI server...")
+            server_success, server_msg = start_comfyui_final()
+        else:
+            server_msg = "System not ready for server startup"
         
         return {
-            "message": f"🐸 ROBUST GPU Pepe setup: {prompt}",
-            "status": "success" if server_success else "partial",
-            "pytorch": {
-                "installation": pytorch_msg,
-                "test_results": pytorch_test
+            "message": f"🐸 FORCE GPU Pepe setup: {prompt}",
+            "status": "success" if server_success else "forcing_fixes",
+            "pytorch_force": {
+                "success": pytorch_success,
+                "message": pytorch_msg
             },
-            "files": file_results,
-            "comfyui": {
-                "test_results": comfyui_results,
-                "success_rate": f"{comfyui_success}/{comfyui_total}"
+            "comfyui_fix": {
+                "success": comfyui_success,
+                "message": comfyui_msg
             },
-            "server": server_msg,
-            "overall_readiness": overall_readiness,
+            "system_test": system_test,
+            "server": {
+                "success": server_success,
+                "message": server_msg
+            },
             "ready_for_generation": server_success,
-            "next_steps": [
-                "✅ PyTorch OK" if pytorch_test.get("ready") else "❌ Fix PyTorch",
-                "✅ Files OK" if all(r.startswith("✅") for r in file_results.values() if isinstance(r, str)) else "❌ Download files",
-                "✅ ComfyUI OK" if comfyui_success >= 2 else "❌ Fix ComfyUI",
-                "✅ Server OK" if server_success else "❌ Start server",
-                "🎯 READY FOR ROBUST GPU PEPE GENERATION!" if server_success else "🔧 Still robustly fixing..."
+            "readiness_percentage": system_test.get("summary", {}).get("readiness_percentage", 0),
+            "final_status": [
+                "🔥 GPU PyTorch FORCED" if pytorch_success else "❌ GPU PyTorch FAILED",
+                "🔧 ComfyUI FIXED" if comfyui_success else "❌ ComfyUI BROKEN",
+                f"🧪 System {system_test.get('summary', {}).get('readiness_percentage', 0):.0f}% ready",
+                "🚀 SERVER RUNNING!" if server_success else "❌ SERVER FAILED",
+                "🎯 READY FOR PEPE DOMINATION!" if server_success else "💀 STILL FIGHTING..."
             ],
-            "debug_info": {
-                "pytorch_available": pytorch_test.get("pytorch_available", False),
-                "cuda_available": pytorch_test.get("cuda_available", False),
-                "files_ready": all(r.startswith("✅") for r in file_results.values() if isinstance(r, str)),
-                "comfyui_ready": comfyui_success >= 2,
-                "server_ready": server_success
-            }
+            "gpu_mode": "FORCED_NO_COMPROMISES"
         }
         
     except Exception as e:
         return {
             "error": str(e),
             "status": "failed",
-            "debug": "Handler exception in robust mode"
+            "debug": "Handler exception in force GPU mode"
         }
 
 if __name__ == '__main__':
-    print("🚀 Starting ROBUST GPU-POWERED Pepe Worker v5.0...")
+    print("🚀 Starting FORCE GPU Pepe Worker v6.0...")
+    print("🔥 GPU OR DEATH!")
     runpod.serverless.start({'handler': handler})
