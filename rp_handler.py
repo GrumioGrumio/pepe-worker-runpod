@@ -1,58 +1,107 @@
 import runpod
 import os
+import json
+import base64
+import requests
+import time
 import subprocess
+import threading
+
+def start_comfyui_server():
+    """Start ComfyUI server in background"""
+    try:
+        print("🚀 Starting ComfyUI server...")
+        # Start ComfyUI server
+        process = subprocess.Popen([
+            "python", "/app/comfyui/main.py", 
+            "--listen", "0.0.0.0", 
+            "--port", "8188",
+            "--disable-auto-launch"
+        ], cwd="/app/comfyui")
+        
+        # Give it time to start
+        time.sleep(20)
+        print("✅ ComfyUI server should be running")
+        return process
+    except Exception as e:
+        print(f"❌ ComfyUI server error: {e}")
+        return None
+
+def create_simple_pepe_workflow(prompt):
+    """Create a simple workflow for Pepe generation"""
+    return {
+        "3": {
+            "inputs": {
+                "seed": int(time.time()),
+                "steps": 8,  # Fast generation
+                "cfg": 1.0,  # Simple settings
+                "sampler_name": "euler",
+                "scheduler": "simple",
+                "denoise": 1.0,
+                "model": ["4", 0],
+                "positive": ["6", 0],
+                "negative": ["7", 0],
+                "latent_image": ["5", 0]
+            },
+            "class_type": "KSampler"
+        },
+        "4": {
+            "inputs": {
+                "ckpt_name": "flux1-schnell.safetensors"  # We'll add this
+            },
+            "class_type": "CheckpointLoaderSimple"
+        },
+        "5": {
+            "inputs": {
+                "width": 1024,
+                "height": 1024,
+                "batch_size": 1
+            },
+            "class_type": "EmptyLatentImage"
+        },
+        "6": {
+            "inputs": {
+                "text": f"{prompt}, pepe the frog, meme style",
+                "clip": ["4", 1]
+            },
+            "class_type": "CLIPTextEncode"
+        },
+        "7": {
+            "inputs": {
+                "text": "blurry, low quality",
+                "clip": ["4", 1]
+            },
+            "class_type": "CLIPTextEncode"
+        },
+        "8": {
+            "inputs": {
+                "samples": ["3", 0],
+                "vae": ["4", 2]
+            },
+            "class_type": "VAEDecode"
+        },
+        "9": {
+            "inputs": {
+                "filename_prefix": "pepe_generation",
+                "images": ["8", 0]
+            },
+            "class_type": "SaveImage"
+        }
+    }
 
 def handler(event):
-    """Check ComfyUI + Pepe LoRA status"""
-    print("🐸 Pepe Worker v3 - LoRA Check")
+    """REAL Pepe generation handler"""
+    print("🐸 REAL Pepe Generation Worker!")
     
     try:
         input_data = event.get('input', {})
         prompt = input_data.get('prompt', 'pepe the frog')
         
-        # Check LoRA file
-        lora_path = "/app/comfyui/models/loras/pepe.safetensors"
-        lora_exists = os.path.exists(lora_path)
-        lora_size = os.path.getsize(lora_path) if lora_exists else 0
+        print(f"📝 Generating Pepe: {prompt}")
         
-        # List all LoRA files
-        lora_dir = "/app/comfyui/models/loras"
-        lora_files = os.listdir(lora_dir) if os.path.exists(lora_dir) else []
+        # Check if we have everything needed
+        lora_exists = os.path.exists("/app/comfyui/models/loras/pepe.safetensors")
+        comfyui_exists = os.path.exists("/app/comfyui/main.py")
         
-        diagnostics = {
-            "comfyui_exists": os.path.exists('/app/comfyui'),
-            "comfyui_main_exists": os.path.exists('/app/comfyui/main.py'),
-            "lora_directory": lora_dir,
-            "lora_files": lora_files,
-            "pepe_lora_exists": lora_exists,
-            "pepe_lora_size": f"{lora_size} bytes" if lora_exists else "Not found",
-            "models_directory": os.listdir('/app/comfyui/models') if os.path.exists('/app/comfyui/models') else []
-        }
-        
-        # Status check
-        if lora_exists and lora_size > 1000000:  # LoRA should be at least 1MB
-            status_msg = "🎉 ComfyUI + Pepe LoRA ready! Next: Add FLUX model"
-            next_step = "Add FLUX.1-dev model for actual generation"
-        elif lora_exists:
-            status_msg = f"⚠️ Pepe LoRA found but small ({lora_size} bytes) - might be incomplete"
-            next_step = "Check LoRA download"
-        else:
-            status_msg = "❌ Pepe LoRA missing"
-            next_step = "Fix LoRA download"
-        
-        return {
-            "message": f"LoRA check: {prompt}",
-            "status": "success",
-            "diagnostics": diagnostics,
-            "status_msg": status_msg,
-            "next_step": next_step
-        }
-        
-    except Exception as e:
-        return {
-            "error": str(e),
-            "status": "failed"
-        }
-
-if __name__ == '__main__':
-    runpod.serverless.start({'handler': handler})
+        if not lora_exists or not comfyui_exists:
+            return {
