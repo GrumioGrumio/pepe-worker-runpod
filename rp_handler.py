@@ -3,222 +3,127 @@ import os
 import requests
 import time
 import json
-import subprocess
-import sys
 import base64
 
-def setup_volume_correct_path():
-    """Setup volume using the correct mount path /runpod-volume"""
+def check_comfyui_status():
+    """Check ComfyUI server status and queue"""
     try:
-        print("📦 Setting up volume at correct path: /runpod-volume")
+        status = {}
         
-        setup_status = {}
-        
-        # Use correct volume mount path
-        volume_root = "/runpod-volume"
-        comfyui_path = f"{volume_root}/comfyui"
-        
-        setup_status["volume_path"] = volume_root
-        setup_status["volume_exists"] = os.path.exists(volume_root)
-        
-        if not os.path.exists(volume_root):
-            return {"error": "Volume not mounted at /runpod-volume"}
-        
-        # Check if already set up
-        if os.path.exists(comfyui_path) and os.path.exists(f"{comfyui_path}/main.py"):
-            setup_status["already_setup"] = True
-            print("✅ Volume already has ComfyUI!")
-        else:
-            setup_status["already_setup"] = False
-            print("🔧 Fresh volume - installing ComfyUI...")
-            
-            # Install ComfyUI
-            print("📥 Cloning ComfyUI...")
-            
-            result = subprocess.run([
-                "git", "clone", "https://github.com/comfyanonymous/ComfyUI.git", comfyui_path
-            ], capture_output=True, timeout=120)
-            
-            if result.returncode != 0:
-                setup_status["comfyui_install"] = f"❌ Failed: {result.stderr.decode()}"
-            else:
-                setup_status["comfyui_install"] = "✅ ComfyUI cloned successfully"
-                
-                # Install dependencies
-                print("📦 Installing dependencies...")
-                pip_result = subprocess.run([
-                    sys.executable, "-m", "pip", "install", "-r", "requirements.txt"
-                ], cwd=comfyui_path, capture_output=True, timeout=300)
-                
-                setup_status["dependencies"] = "✅ Dependencies installed" if pip_result.returncode == 0 else f"⚠️ Some failed: {pip_result.stderr.decode()[:200]}"
-        
-        # Create model directories
-        models_dir = f"{comfyui_path}/models"
-        checkpoints_dir = f"{models_dir}/checkpoints"
-        loras_dir = f"{models_dir}/loras"
-        
-        os.makedirs(checkpoints_dir, exist_ok=True)
-        os.makedirs(loras_dir, exist_ok=True)
-        
-        # Download SD 1.5 model
-        model_path = f"{checkpoints_dir}/sd15.safetensors"
-        if os.path.exists(model_path) and os.path.getsize(model_path) > 1000000000:
-            setup_status["sd15_model"] = f"✅ Already exists ({os.path.getsize(model_path)} bytes)"
-        else:
-            print("📥 Downloading SD 1.5 model (4GB)...")
-            try:
-                response = requests.get(
-                    "https://huggingface.co/runwayml/stable-diffusion-v1-5/resolve/main/v1-5-pruned-emaonly.safetensors",
-                    stream=True, timeout=900
-                )
-                response.raise_for_status()
-                
-                downloaded = 0
-                with open(model_path, 'wb') as f:
-                    for chunk in response.iter_content(chunk_size=1024*1024):
-                        if chunk:
-                            f.write(chunk)
-                            downloaded += len(chunk)
-                            if downloaded % (500*1024*1024) == 0:
-                                print(f"📊 SD model: {downloaded // (1024*1024)}MB...")
-                
-                setup_status["sd15_model"] = f"✅ Downloaded {os.path.getsize(model_path)} bytes"
-                
-            except Exception as e:
-                setup_status["sd15_model"] = f"❌ Download failed: {str(e)}"
-        
-        # Download Pepe LoRA
-        lora_path = f"{loras_dir}/pepe.safetensors"
-        if os.path.exists(lora_path) and os.path.getsize(lora_path) > 100000000:
-            setup_status["pepe_lora"] = f"✅ Already exists ({os.path.getsize(lora_path)} bytes)"
-        else:
-            print("📥 Downloading Pepe LoRA (171MB)...")
-            try:
-                response = requests.get(
-                    "https://huggingface.co/openfree/pepe/resolve/main/pepe.safetensors",
-                    stream=True, timeout=300
-                )
-                response.raise_for_status()
-                
-                with open(lora_path, 'wb') as f:
-                    for chunk in response.iter_content(chunk_size=8192):
-                        if chunk:
-                            f.write(chunk)
-                
-                setup_status["pepe_lora"] = f"✅ Downloaded {os.path.getsize(lora_path)} bytes"
-                
-            except Exception as e:
-                setup_status["pepe_lora"] = f"❌ Download failed: {str(e)}"
-        
-        # Create output directory
-        output_dir = f"{comfyui_path}/output"
-        os.makedirs(output_dir, exist_ok=True)
-        
-        # Test imports
+        # Check server
         try:
-            os.chdir(comfyui_path)
-            sys.path.insert(0, comfyui_path)
-            
-            import comfy.utils
-            import nodes
-            setup_status["imports_test"] = "✅ ComfyUI imports working"
-            
-        except Exception as e:
-            setup_status["imports_test"] = f"❌ Import test failed: {str(e)}"
-        
-        return setup_status
-        
-    except Exception as e:
-        return {"error": f"Volume setup failed: {str(e)}"}
-
-def start_comfyui_from_volume():
-    """Start ComfyUI from volume"""
-    try:
-        print("🚀 Starting ComfyUI from volume...")
-        
-        comfyui_path = "/runpod-volume/comfyui"
-        
-        if not os.path.exists(f"{comfyui_path}/main.py"):
-            return False, "ComfyUI not found in volume"
-        
-        # Kill existing
-        try:
-            subprocess.run(["pkill", "-f", "main.py"], check=False)
-            time.sleep(2)
+            response = requests.get("http://localhost:8188/", timeout=5)
+            status["server_running"] = response.status_code == 200
         except:
-            pass
+            status["server_running"] = False
         
-        # Start server
-        env = os.environ.copy()
-        env["CUDA_VISIBLE_DEVICES"] = "0"
-        env["PYTHONPATH"] = comfyui_path
+        # Check queue
+        try:
+            response = requests.get("http://localhost:8188/queue", timeout=5)
+            if response.status_code == 200:
+                queue_data = response.json()
+                status["queue_running"] = len(queue_data.get("queue_running", []))
+                status["queue_pending"] = len(queue_data.get("queue_pending", []))
+            else:
+                status["queue_error"] = f"Queue status: {response.status_code}"
+        except Exception as e:
+            status["queue_error"] = str(e)
         
-        process = subprocess.Popen(
-            [sys.executable, "main.py", "--listen", "0.0.0.0", "--port", "8188"],
-            cwd=comfyui_path,
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            start_new_session=True
-        )
+        # Check history
+        try:
+            response = requests.get("http://localhost:8188/history", timeout=5)
+            if response.status_code == 200:
+                history_data = response.json()
+                status["history_count"] = len(history_data)
+                
+                # Get recent history
+                recent_items = []
+                for item_id, item_data in list(history_data.items())[-3:]:  # Last 3 items
+                    recent_items.append({
+                        "id": item_id,
+                        "status": item_data.get("status", {}),
+                        "outputs": list(item_data.get("outputs", {}).keys())
+                    })
+                status["recent_history"] = recent_items
+            else:
+                status["history_error"] = f"History status: {response.status_code}"
+        except Exception as e:
+            status["history_error"] = str(e)
         
-        # Wait for startup
-        for i in range(60):
-            try:
-                response = requests.get("http://localhost:8188/", timeout=3)
-                if response.status_code == 200:
-                    print("✅ ComfyUI server started from volume!")
-                    return True, f"Server running (PID: {process.pid})"
-            except:
-                pass
-            
-            if process.poll() is not None:
-                stdout, stderr = process.communicate()
-                return False, f"Server crashed: {stderr.decode()[:200]}"
-            
-            time.sleep(1)
-        
-        return False, "Server startup timeout"
+        return status
         
     except Exception as e:
-        return False, f"Server start failed: {str(e)}"
+        return {"error": str(e)}
 
-def generate_real_pepe_from_volume(prompt):
-    """Generate real Pepe using volume-based ComfyUI"""
+def check_output_directory():
+    """Check output directory for images"""
     try:
-        print(f"🐸 Generating REAL Pepe from volume: {prompt}")
+        output_info = {}
         
-        # Workflow with Pepe LoRA
-        workflow = {
+        output_dir = "/runpod-volume/comfyui/output"
+        output_info["output_dir"] = output_dir
+        output_info["output_exists"] = os.path.exists(output_dir)
+        
+        if os.path.exists(output_dir):
+            # List all files
+            all_files = []
+            for root, dirs, files in os.walk(output_dir):
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    file_info = {
+                        "name": file,
+                        "path": file_path,
+                        "size": os.path.getsize(file_path),
+                        "created": time.ctime(os.path.getctime(file_path)),
+                        "age_minutes": (time.time() - os.path.getctime(file_path)) / 60
+                    }
+                    all_files.append(file_info)
+            
+            # Sort by creation time (newest first)
+            all_files.sort(key=lambda x: os.path.getctime(x["path"]), reverse=True)
+            
+            output_info["total_files"] = len(all_files)
+            output_info["recent_files"] = all_files[:10]  # Last 10 files
+            
+            # Check for images specifically
+            image_files = [f for f in all_files if f["name"].lower().endswith(('.png', '.jpg', '.jpeg'))]
+            output_info["image_count"] = len(image_files)
+            output_info["recent_images"] = image_files[:5]  # Last 5 images
+            
+        else:
+            output_info["error"] = "Output directory doesn't exist"
+        
+        return output_info
+        
+    except Exception as e:
+        return {"error": str(e)}
+
+def test_simple_generation():
+    """Test a very simple generation workflow"""
+    try:
+        print("🧪 Testing simple generation workflow...")
+        
+        # Very basic workflow
+        simple_workflow = {
             "1": {
                 "inputs": {"ckpt_name": "sd15.safetensors"},
                 "class_type": "CheckpointLoaderSimple"
             },
             "2": {
                 "inputs": {
-                    "lora_name": "pepe.safetensors",
-                    "strength_model": 1.0,
-                    "strength_clip": 1.0,
-                    "model": ["1", 0],
+                    "text": "a simple green frog",
                     "clip": ["1", 1]
                 },
-                "class_type": "LoraLoader"
+                "class_type": "CLIPTextEncode"
             },
             "3": {
                 "inputs": {
-                    "text": f"pepe the frog, {prompt}, meme style, simple cartoon, green frog, feels good man",
-                    "clip": ["2", 1]
+                    "text": "blurry, low quality",
+                    "clip": ["1", 1]
                 },
                 "class_type": "CLIPTextEncode"
             },
             "4": {
-                "inputs": {
-                    "text": "blurry, low quality, distorted, realistic, photorealistic, anime, complex background",
-                    "clip": ["2", 1]
-                },
-                "class_type": "CLIPTextEncode"
-            },
-            "5": {
                 "inputs": {
                     "width": 512,
                     "height": 512,
@@ -226,55 +131,56 @@ def generate_real_pepe_from_volume(prompt):
                 },
                 "class_type": "EmptyLatentImage"
             },
-            "6": {
+            "5": {
                 "inputs": {
-                    "seed": int(time.time()) % 1000000,
-                    "steps": 25,
-                    "cfg": 8.0,
-                    "sampler_name": "euler_ancestral",
+                    "seed": 12345,
+                    "steps": 10,
+                    "cfg": 7.0,
+                    "sampler_name": "euler",
                     "scheduler": "normal",
                     "denoise": 1.0,
-                    "model": ["2", 0],
-                    "positive": ["3", 0],
-                    "negative": ["4", 0],
-                    "latent_image": ["5", 0]
+                    "model": ["1", 0],
+                    "positive": ["2", 0],
+                    "negative": ["3", 0],
+                    "latent_image": ["4", 0]
                 },
                 "class_type": "KSampler"
             },
-            "7": {
+            "6": {
                 "inputs": {
-                    "samples": ["6", 0],
+                    "samples": ["5", 0],
                     "vae": ["1", 2]
                 },
                 "class_type": "VAEDecode"
             },
-            "8": {
+            "7": {
                 "inputs": {
-                    "filename_prefix": f"VOLUME_PEPE_{int(time.time())}",
-                    "images": ["7", 0]
+                    "filename_prefix": f"simple_test_{int(time.time())}",
+                    "images": ["6", 0]
                 },
                 "class_type": "SaveImage"
             }
         }
         
-        # Submit generation
+        # Submit simple generation
         response = requests.post(
             "http://localhost:8188/prompt",
-            json={"prompt": workflow},
+            json={"prompt": simple_workflow},
             timeout=30
         )
         
         if response.status_code != 200:
-            return {"error": f"Generation failed: {response.status_code}"}
+            return {"error": f"Simple generation failed: {response.status_code}"}
         
         prompt_data = response.json()
         prompt_id = prompt_data.get("prompt_id")
         
-        print(f"✅ REAL Pepe queued: {prompt_id}")
+        print(f"✅ Simple generation queued: {prompt_id}")
         
-        # Wait for completion
-        for i in range(120):
+        # Wait for completion with more detailed monitoring
+        for i in range(90):
             try:
+                # Check queue
                 queue_response = requests.get("http://localhost:8188/queue", timeout=5)
                 if queue_response.status_code == 200:
                     queue_data = queue_response.json()
@@ -289,11 +195,24 @@ def generate_real_pepe_from_volume(prompt):
                     )
                     
                     if not still_processing:
-                        print("🎉 REAL Pepe generation completed!")
+                        print("🎉 Simple generation completed!")
+                        
+                        # Check history for this prompt
+                        history_response = requests.get("http://localhost:8188/history", timeout=5)
+                        if history_response.status_code == 200:
+                            history_data = history_response.json()
+                            if prompt_id in history_data:
+                                prompt_history = history_data[prompt_id]
+                                return {
+                                    "success": True,
+                                    "prompt_id": prompt_id,
+                                    "history": prompt_history,
+                                    "outputs": prompt_history.get("outputs", {})
+                                }
                         break
                 
-                if i % 15 == 0:
-                    print(f"⏳ Generating REAL Pepe... ({i}/120s)")
+                if i % 10 == 0:
+                    print(f"⏳ Simple generation... ({i}/90s)")
                 
                 time.sleep(1)
                 
@@ -301,22 +220,31 @@ def generate_real_pepe_from_volume(prompt):
                 print(f"⚠️ Queue check error: {e}")
                 time.sleep(1)
         
-        # Find generated image
-        output_dir = "/runpod-volume/comfyui/output"
-        image_files = []
+        return {"success": True, "prompt_id": prompt_id, "note": "Completed but couldn't get history"}
         
-        if os.path.exists(output_dir):
-            for root, dirs, files in os.walk(output_dir):
-                for file in files:
-                    if file.lower().endswith(('.png', '.jpg', '.jpeg')):
-                        file_path = os.path.join(root, file)
-                        if time.time() - os.path.getctime(file_path) < 300:
-                            image_files.append(file_path)
+    except Exception as e:
+        return {"error": f"Simple generation failed: {str(e)}"}
+
+def get_latest_image():
+    """Get the most recent image from output"""
+    try:
+        output_dir = "/runpod-volume/comfyui/output"
+        
+        if not os.path.exists(output_dir):
+            return None, "Output directory doesn't exist"
+        
+        # Find all images
+        image_files = []
+        for root, dirs, files in os.walk(output_dir):
+            for file in files:
+                if file.lower().endswith(('.png', '.jpg', '.jpeg')):
+                    file_path = os.path.join(root, file)
+                    image_files.append(file_path)
         
         if not image_files:
-            return {"error": "No REAL Pepe images found"}
+            return None, "No images found"
         
-        # Get latest image
+        # Get most recent
         latest_image = max(image_files, key=os.path.getctime)
         
         # Convert to base64
@@ -325,80 +253,70 @@ def generate_real_pepe_from_volume(prompt):
             img_base64 = base64.b64encode(img_data).decode('utf-8')
         
         return {
-            "success": True,
-            "image_path": latest_image,
-            "image_base64": img_base64,
-            "image_size": len(img_data),
-            "prompt_id": prompt_id,
-            "lora_used": "pepe.safetensors (full strength)",
-            "method": "REAL PEPE FROM VOLUME"
-        }
+            "path": latest_image,
+            "base64": img_base64,
+            "size": len(img_data),
+            "created": time.ctime(os.path.getctime(latest_image))
+        }, "Success"
         
     except Exception as e:
-        return {"error": f"REAL Pepe generation failed: {str(e)}"}
+        return None, f"Error: {str(e)}"
 
 def handler(event):
-    """Corrected volume setup and Pepe generation"""
-    print("🗄️ VOLUME SETUP v18.0 - CORRECTED PATH! 📦")
-    print("🎯 Using correct mount path: /runpod-volume")
+    """Debug generation and test simple workflow"""
+    print("🔍 GENERATION DEBUG v19.0! 🕵️")
+    print("🎯 ComfyUI is installed and running - let's debug generation")
     
     try:
         input_data = event.get('input', {})
-        prompt = input_data.get('prompt', 'wearing crown and sunglasses')
-        action = input_data.get('action', 'setup_and_generate')
+        action = input_data.get('action', 'debug_and_test')
         
-        # Step 1: Setup volume
-        print("🔄 Step 1: Setting up volume...")
-        setup_result = setup_volume_correct_path()
+        # Step 1: Check ComfyUI status
+        print("🔄 Step 1: Checking ComfyUI status...")
+        comfyui_status = check_comfyui_status()
         
-        if "error" in setup_result:
-            return {
-                "error": "Volume setup failed",
-                "details": setup_result,
-                "mount_path": "/runpod-volume"
-            }
+        # Step 2: Check output directory
+        print("🔄 Step 2: Checking output directory...")
+        output_info = check_output_directory()
         
-        # Step 2: Start ComfyUI
-        print("🔄 Step 2: Starting ComfyUI...")
-        server_success, server_msg = start_comfyui_from_volume()
+        # Step 3: Test simple generation
+        print("🔄 Step 3: Testing simple generation...")
+        simple_test = test_simple_generation()
         
-        if not server_success:
-            return {
-                "error": "Failed to start ComfyUI from volume",
-                "details": server_msg,
-                "setup_result": setup_result
-            }
+        # Step 4: Check for any new images
+        print("🔄 Step 4: Looking for generated images...")
+        latest_image, image_msg = get_latest_image()
         
-        # Step 3: Generate REAL Pepe
-        print(f"🔄 Step 3: Generating REAL Pepe: {prompt}")
-        generation_result = generate_real_pepe_from_volume(prompt)
-        
-        if generation_result.get("success"):
-            return {
-                "message": "🗄️ VOLUME PEPE GENERATED! 🎉",
-                "prompt": prompt,
-                "setup": setup_result,
-                "server": server_msg,
-                "generation": generation_result,
-                "volume_path": "/runpod-volume",
-                "success": True,
-                "note": "Volume is working! Future requests will be instant!"
-            }
-        else:
-            return {
-                "error": "REAL Pepe generation failed",
-                "details": generation_result,
-                "setup": setup_result,
-                "server": server_msg,
-                "volume_working": True
-            }
+        return {
+            "message": "🔍 Generation Debug Complete",
+            "comfyui_status": comfyui_status,
+            "output_directory": output_info,
+            "simple_generation_test": simple_test,
+            "latest_image": {
+                "found": latest_image is not None,
+                "details": latest_image,
+                "message": image_msg
+            },
+            "diagnosis": {
+                "server_working": comfyui_status.get("server_running", False),
+                "output_dir_exists": output_info.get("output_exists", False),
+                "images_generated": output_info.get("image_count", 0),
+                "simple_test_success": simple_test.get("success", False)
+            },
+            "recommendations": [
+                "Check ComfyUI logs for generation errors",
+                "Verify LoRA file is loading correctly", 
+                "Test with simpler workflow first",
+                "Check if images are being saved to different location"
+            ]
+        }
         
     except Exception as e:
         return {
             "error": str(e),
-            "debug": "Corrected volume handler exception"
+            "debug": "Generation debug handler exception"
         }
 
 if __name__ == '__main__':
-    print("🚀 Starting Corrected Volume Setup...")
+    print("🚀 Starting Generation Debug Handler...")
     runpod.serverless.start({'handler': handler})
