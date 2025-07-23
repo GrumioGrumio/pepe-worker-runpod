@@ -6,6 +6,8 @@ import json
 import subprocess
 import sys
 import base64
+import glob
+from pathlib import Path
 
 def check_volume_setup():
     """Check if volume has everything needed"""
@@ -20,6 +22,11 @@ def check_volume_setup():
             "pepe_lora": os.path.exists(f"{comfyui_path}/models/loras/pepe.safetensors"),
             "output_dir": os.path.exists(f"{comfyui_path}/output")
         }
+        
+        # Create output directory if it doesn't exist
+        if not checks["output_dir"]:
+            os.makedirs(f"{comfyui_path}/output", exist_ok=True)
+            checks["output_dir"] = True
         
         if checks["sd15_model"]:
             checks["sd15_size"] = os.path.getsize(f"{comfyui_path}/models/checkpoints/sd15.safetensors")
@@ -78,8 +85,6 @@ def start_comfyui_server():
         )
         
         # Wait for startup with progress updates
-        startup_logs = []
-        
         for i in range(120):  # 2 minutes timeout
             try:
                 # Check if server responds
@@ -110,7 +115,6 @@ def start_comfyui_server():
         
         # Timeout reached
         if process.poll() is None:
-            # Process still running but not responding
             try:
                 stdout, stderr = process.communicate(timeout=5)
                 return False, {
@@ -121,7 +125,6 @@ def start_comfyui_server():
             except:
                 return False, "Server timeout - process hanging"
         else:
-            # Process died
             stdout, stderr = process.communicate()
             return False, {
                 "error": "Process died during startup",
@@ -172,12 +175,111 @@ def test_server_endpoints():
     except Exception as e:
         return {"error": str(e), "all_working": False}
 
+def find_latest_images(output_dir, time_threshold=300):
+    """Find the most recent images in output directory"""
+    try:
+        image_files = []
+        current_time = time.time()
+        
+        # Search patterns for different image extensions
+        patterns = ['*.png', '*.jpg', '*.jpeg', '*.webp']
+        
+        for pattern in patterns:
+            # Search recursively in output directory
+            search_path = os.path.join(output_dir, "**", pattern)
+            files = glob.glob(search_path, recursive=True)
+            
+            for file_path in files:
+                try:
+                    # Check if file was created recently
+                    creation_time = os.path.getctime(file_path)
+                    if current_time - creation_time < time_threshold:
+                        image_files.append({
+                            'path': file_path,
+                            'created': creation_time,
+                            'size': os.path.getsize(file_path)
+                        })
+                except (OSError, IOError):
+                    continue
+        
+        # Sort by creation time (newest first)
+        image_files.sort(key=lambda x: x['created'], reverse=True)
+        
+        return image_files
+        
+    except Exception as e:
+        print(f"Error finding images: {e}")
+        return []
+
+def wait_for_generation_complete(prompt_id, timeout=180):
+    """Wait for generation to complete and return status"""
+    try:
+        print(f"⏳ Waiting for generation {prompt_id} to complete...")
+        
+        for i in range(timeout):
+            try:
+                # Check queue status
+                queue_response = requests.get("http://localhost:8188/queue", timeout=5)
+                if queue_response.status_code != 200:
+                    time.sleep(1)
+                    continue
+                
+                queue_data = queue_response.json()
+                running = queue_data.get("queue_running", [])
+                pending = queue_data.get("queue_pending", [])
+                
+                # Check if our prompt is still in queue
+                still_processing = False
+                for item in running + pending:
+                    if len(item) > 1 and isinstance(item[1], dict):
+                        if item[1].get("prompt_id") == prompt_id:
+                            still_processing = True
+                            break
+                
+                if not still_processing:
+                    print(f"✅ Generation {prompt_id} completed!")
+                    return True, f"Completed in {i} seconds"
+                
+                # Progress updates
+                if i % 15 == 0:
+                    print(f"⏳ Still generating... ({i}/{timeout}s)")
+                
+                time.sleep(1)
+                
+            except Exception as e:
+                print(f"⚠️ Queue check error: {e}")
+                time.sleep(2)
+        
+        return False, f"Timeout after {timeout} seconds"
+        
+    except Exception as e:
+        return False, f"Wait error: {str(e)}"
+
 def generate_test_pepe(prompt="wearing a crown"):
-    """Generate test Pepe with LoRA"""
+    """Generate test Pepe with LoRA - Enhanced version"""
     try:
         print(f"🐸 Generating test Pepe: {prompt}")
         
-        # Test workflow with LoRA
+        # Get output directory
+        output_dir = "/runpod-volume/comfyui/output"
+        
+        # Clear old images (optional - keeps storage clean)
+        old_threshold = time.time() - 3600  # 1 hour ago
+        old_images = find_latest_images(output_dir, time_threshold=3600)
+        if len(old_images) > 10:  # Keep only recent images
+            print(f"🧹 Cleaning {len(old_images) - 10} old images...")
+            for img in old_images[10:]:
+                try:
+                    os.remove(img['path'])
+                except:
+                    pass
+        
+        # Record time before generation
+        generation_start_time = time.time()
+        
+        # Enhanced workflow with better settings
+        unique_filename = f"PEPE_{int(generation_start_time)}_{hash(prompt) % 10000}"
+        
         workflow = {
             "1": {
                 "inputs": {"ckpt_name": "sd15.safetensors"},
@@ -186,8 +288,8 @@ def generate_test_pepe(prompt="wearing a crown"):
             "2": {
                 "inputs": {
                     "lora_name": "pepe.safetensors",
-                    "strength_model": 0.8,  # Slightly reduced for stability
-                    "strength_clip": 0.8,
+                    "strength_model": 0.9,
+                    "strength_clip": 0.9,
                     "model": ["1", 0],
                     "clip": ["1", 1]
                 },
@@ -195,14 +297,14 @@ def generate_test_pepe(prompt="wearing a crown"):
             },
             "3": {
                 "inputs": {
-                    "text": f"pepe the frog, {prompt}, meme style, simple cartoon, green frog",
+                    "text": f"pepe the frog, {prompt}, meme style, cartoon, green frog, masterpiece, high quality",
                     "clip": ["2", 1]
                 },
                 "class_type": "CLIPTextEncode"
             },
             "4": {
                 "inputs": {
-                    "text": "blurry, low quality, distorted, realistic, photorealistic",
+                    "text": "blurry, low quality, distorted, realistic, photorealistic, ugly, deformed",
                     "clip": ["2", 1]
                 },
                 "class_type": "CLIPTextEncode"
@@ -217,10 +319,10 @@ def generate_test_pepe(prompt="wearing a crown"):
             },
             "6": {
                 "inputs": {
-                    "seed": int(time.time()) % 1000000,
-                    "steps": 20,
-                    "cfg": 7.5,
-                    "sampler_name": "euler",
+                    "seed": int(generation_start_time) % 1000000,
+                    "steps": 25,  # Increased steps for better quality
+                    "cfg": 8.0,   # Slightly higher CFG
+                    "sampler_name": "euler_ancestral",  # Better sampler
                     "scheduler": "normal", 
                     "denoise": 1.0,
                     "model": ["2", 0],
@@ -239,7 +341,7 @@ def generate_test_pepe(prompt="wearing a crown"):
             },
             "8": {
                 "inputs": {
-                    "filename_prefix": f"AUTO_PEPE_{int(time.time())}",
+                    "filename_prefix": unique_filename,
                     "images": ["7", 0]
                 },
                 "class_type": "SaveImage"
@@ -247,6 +349,7 @@ def generate_test_pepe(prompt="wearing a crown"):
         }
         
         # Submit generation
+        print("📤 Submitting generation request...")
         response = requests.post(
             "http://localhost:8188/prompt",
             json={"prompt": workflow},
@@ -264,76 +367,83 @@ def generate_test_pepe(prompt="wearing a crown"):
         
         print(f"✅ Pepe generation queued: {prompt_id}")
         
-        # Monitor generation with detailed progress
-        for i in range(150):  # 2.5 minutes
-            try:
-                # Check queue status
-                queue_response = requests.get("http://localhost:8188/queue", timeout=5)
-                if queue_response.status_code == 200:
-                    queue_data = queue_response.json()
-                    
-                    running = queue_data.get("queue_running", [])
-                    pending = queue_data.get("queue_pending", [])
-                    
-                    still_processing = any(
-                        item[1].get("prompt_id") == prompt_id 
-                        for item in running + pending
-                        if len(item) > 1 and isinstance(item[1], dict)
-                    )
-                    
-                    if not still_processing:
-                        print("🎉 Pepe generation completed!")
-                        
-                        # Check for generated images
-                        output_dir = "/runpod-volume/comfyui/output"
-                        image_files = []
-                        
-                        if os.path.exists(output_dir):
-                            for root, dirs, files in os.walk(output_dir):
-                                for file in files:
-                                    if file.lower().endswith(('.png', '.jpg', '.jpeg')):
-                                        file_path = os.path.join(root, file)
-                                        if time.time() - os.path.getctime(file_path) < 300:  # Last 5 minutes
-                                            image_files.append(file_path)
-                        
-                        if image_files:
-                            # Get most recent image
-                            latest_image = max(image_files, key=os.path.getctime)
-                            
-                            # Convert to base64
-                            with open(latest_image, 'rb') as img_file:
-                                img_data = img_file.read()
-                                img_base64 = base64.b64encode(img_data).decode('utf-8')
-                            
-                            return {
-                                "success": True,
-                                "prompt_id": prompt_id,
-                                "image_path": latest_image,
-                                "image_base64": img_base64,
-                                "image_size": len(img_data),
-                                "generation_time": f"~{i} seconds"
-                            }
-                        else:
-                            return {"error": "Generation completed but no images found"}
-                
-                if i % 15 == 0:
-                    print(f"⏳ Generating Pepe... ({i}/150s)")
-                
-                time.sleep(1)
-                
-            except Exception as e:
-                print(f"⚠️ Monitor error: {e}")
-                time.sleep(1)
+        # Wait for completion
+        success, result = wait_for_generation_complete(prompt_id)
         
-        return {"error": "Generation timeout after 2.5 minutes"}
+        if not success:
+            return {"error": f"Generation failed: {result}"}
+        
+        # Find generated images
+        print("🔍 Searching for generated images...")
+        recent_images = find_latest_images(output_dir, time_threshold=300)
+        
+        if not recent_images:
+            # Debug: List all files in output directory
+            debug_info = {
+                "output_dir_exists": os.path.exists(output_dir),
+                "output_dir_contents": [],
+                "all_files": []
+            }
+            
+            try:
+                if os.path.exists(output_dir):
+                    for root, dirs, files in os.walk(output_dir):
+                        for file in files:
+                            full_path = os.path.join(root, file)
+                            debug_info["all_files"].append({
+                                "path": full_path,
+                                "size": os.path.getsize(full_path),
+                                "modified": os.path.getmtime(full_path)
+                            })
+                    
+                    debug_info["output_dir_contents"] = os.listdir(output_dir)
+            except Exception as e:
+                debug_info["list_error"] = str(e)
+            
+            return {
+                "error": "No recent images found after generation",
+                "debug": debug_info,
+                "prompt_id": prompt_id,
+                "generation_time": result
+            }
+        
+        # Get the most recent image
+        latest_image = recent_images[0]
+        image_path = latest_image['path']
+        
+        print(f"🎉 Found generated image: {image_path}")
+        
+        # Convert to base64
+        try:
+            with open(image_path, 'rb') as img_file:
+                img_data = img_file.read()
+                img_base64 = base64.b64encode(img_data).decode('utf-8')
+            
+            return {
+                "success": True,
+                "prompt_id": prompt_id,
+                "image_path": image_path,
+                "image_base64": img_base64,
+                "image_size": len(img_data),
+                "generation_result": result,
+                "total_recent_images": len(recent_images),
+                "filename": os.path.basename(image_path)
+            }
+            
+        except Exception as e:
+            return {
+                "error": f"Failed to read generated image: {str(e)}",
+                "image_path": image_path,
+                "prompt_id": prompt_id
+            }
         
     except Exception as e:
         return {"error": f"Generation failed: {str(e)}"}
 
 def handler(event):
     """Auto-start handler - always gets ComfyUI running from volume"""
-    print("🗄️ AUTO-START VOLUME HANDLER v20.0! 🚀")
-    print("🎯 Always starts ComfyUI from volume on any worker")
+    print("🗄️ AUTO-START VOLUME HANDLER v21.0! 🚀")
+    print("🎯 Enhanced image detection and debugging")
     
     try:
         input_data = event.get('input', {})
@@ -393,7 +503,8 @@ def handler(event):
                 "generation_error": generation_result,
                 "volume_check": volume_check,
                 "server_result": server_result,
-                "endpoint_tests": endpoint_tests
+                "endpoint_tests": endpoint_tests,
+                "debug": generation_result.get("debug", {})
             }
         
     except Exception as e:
@@ -403,5 +514,5 @@ def handler(event):
         }
 
 if __name__ == '__main__':
-    print("🚀 Starting Auto-Start Volume Handler...")
+    print("🚀 Starting Enhanced Auto-Start Volume Handler...")
     runpod.serverless.start({'handler': handler})
