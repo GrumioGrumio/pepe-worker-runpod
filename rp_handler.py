@@ -3,172 +3,129 @@ import os
 import requests
 import time
 import json
-import subprocess
-import sys
 import base64
 import glob
 
-def check_volume_setup():
-    """Check if volume has everything needed"""
+def download_models():
+    """Download required models if they don't exist"""
     try:
-        volume_root = "/runpod-volume"
-        comfyui_path = f"{volume_root}/comfyui"
+        print("📦 Checking and downloading models...")
         
-        checks = {
-            "volume_mounted": os.path.exists(volume_root),
-            "comfyui_exists": os.path.exists(f"{comfyui_path}/main.py"),
-            "sd15_model": os.path.exists(f"{comfyui_path}/models/checkpoints/sd15.safetensors"),
-            "pepe_lora": os.path.exists(f"{comfyui_path}/models/loras/pepe.safetensors"),
-            "output_dir": os.path.exists(f"{comfyui_path}/output")
-        }
+        models_dir = "/app/comfyui/models"
+        checkpoints_dir = f"{models_dir}/checkpoints"
+        loras_dir = f"{models_dir}/loras"
         
-        if not checks["output_dir"]:
-            os.makedirs(f"{comfyui_path}/output", exist_ok=True)
-            checks["output_dir"] = True
+        # Create directories
+        os.makedirs(checkpoints_dir, exist_ok=True)
+        os.makedirs(loras_dir, exist_ok=True)
         
-        if checks["sd15_model"]:
-            checks["sd15_size"] = os.path.getsize(f"{comfyui_path}/models/checkpoints/sd15.safetensors")
+        results = {}
         
-        if checks["pepe_lora"]:
-            checks["lora_size"] = os.path.getsize(f"{comfyui_path}/models/loras/pepe.safetensors")
-        
-        checks["ready"] = all(checks[key] for key in ["volume_mounted", "comfyui_exists", "sd15_model", "pepe_lora"])
-        
-        return checks
-        
-    except Exception as e:
-        return {"error": str(e), "ready": False}
-
-def start_comfyui_server():
-    """Start ComfyUI server from volume"""
-    try:
-        print("🚀 Starting ComfyUI server from volume...")
-        
-        comfyui_path = "/runpod-volume/comfyui"
-        
-        # Kill existing processes
-        try:
-            subprocess.run(["pkill", "-f", "main.py"], check=False, timeout=5)
-            time.sleep(3)
-        except:
-            pass
-        
-        # Check if already running
-        try:
-            response = requests.get("http://localhost:8188/", timeout=3)
-            if response.status_code == 200:
-                print("✅ ComfyUI server already running!")
-                return True, "Server already running"
-        except:
-            pass
-        
-        # Set up environment
-        env = os.environ.copy()
-        env["CUDA_VISIBLE_DEVICES"] = "0"
-        env["PYTHONPATH"] = comfyui_path
-        
-        # Start server
-        cmd = [sys.executable, "main.py", "--listen", "0.0.0.0", "--port", "8188", "--verbose"]
-        
-        process = subprocess.Popen(
-            cmd,
-            cwd=comfyui_path,
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            start_new_session=True
-        )
-        
-        # Wait for startup
-        for i in range(120):
+        # Download SD 1.5 model
+        model_path = f"{checkpoints_dir}/sd15.safetensors"
+        if os.path.exists(model_path) and os.path.getsize(model_path) > 3000000000:  # 3GB+
+            results["sd15_model"] = f"✅ Already exists ({os.path.getsize(model_path)} bytes)"
+        else:
+            print("📥 Downloading SD 1.5 model (4GB)...")
             try:
-                response = requests.get("http://localhost:8188/", timeout=2)
-                if response.status_code == 200:
-                    print("✅ ComfyUI server started successfully!")
-                    return True, f"Server running (PID: {process.pid})"
-            except:
-                pass
-            
-            if process.poll() is not None:
-                stdout, stderr = process.communicate()
-                return False, f"Process crashed: {stderr.decode()[-500:]}"
-            
-            if i % 20 == 0:
-                print(f"⏳ Server starting... ({i}/120 seconds)")
-            
-            time.sleep(1)
+                import requests
+                response = requests.get(
+                    "https://huggingface.co/runwayml/stable-diffusion-v1-5/resolve/main/v1-5-pruned-emaonly.safetensors",
+                    stream=True, timeout=1800  # 30 minutes
+                )
+                response.raise_for_status()
+                
+                downloaded = 0
+                with open(model_path, 'wb') as f:
+                    for chunk in response.iter_content(chunk_size=1024*1024):
+                        if chunk:
+                            f.write(chunk)
+                            downloaded += len(chunk)
+                            if downloaded % (500*1024*1024) == 0:  # Every 500MB
+                                print(f"📊 Downloaded: {downloaded // (1024*1024)}MB...")
+                
+                results["sd15_model"] = f"✅ Downloaded ({os.path.getsize(model_path)} bytes)"
+                
+            except Exception as e:
+                results["sd15_model"] = f"❌ Download failed: {str(e)}"
         
-        return False, "Server startup timeout"
+        # Download Pepe LoRA
+        lora_path = f"{loras_dir}/pepe.safetensors"
+        if os.path.exists(lora_path) and os.path.getsize(lora_path) > 100000000:  # 100MB+
+            results["pepe_lora"] = f"✅ Already exists ({os.path.getsize(lora_path)} bytes)"
+        else:
+            print("📥 Downloading Pepe LoRA (171MB)...")
+            try:
+                response = requests.get(
+                    "https://huggingface.co/openfree/pepe/resolve/main/pepe.safetensors",
+                    stream=True, timeout=600  # 10 minutes
+                )
+                response.raise_for_status()
+                
+                with open(lora_path, 'wb') as f:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        if chunk:
+                            f.write(chunk)
+                
+                results["pepe_lora"] = f"✅ Downloaded ({os.path.getsize(lora_path)} bytes)"
+                
+            except Exception as e:
+                results["pepe_lora"] = f"❌ Download failed: {str(e)}"
         
-    except Exception as e:
-        return False, f"Server start exception: {str(e)}"
-
-def get_available_models():
-    """Get list of available models and LoRAs from ComfyUI"""
-    try:
-        response = requests.get("http://localhost:8188/object_info", timeout=10)
-        if response.status_code != 200:
-            return {"error": f"Object info request failed: {response.status_code}"}
-        
-        info = response.json()
-        
-        # Extract model info
-        models_info = {}
-        
-        # Checkpoints
-        if "CheckpointLoaderSimple" in info:
-            checkpoint_info = info["CheckpointLoaderSimple"]
-            if "input" in checkpoint_info and "required" in checkpoint_info["input"]:
-                ckpt_input = checkpoint_info["input"]["required"]
-                if "ckpt_name" in ckpt_input:
-                    models_info["checkpoints"] = ckpt_input["ckpt_name"][0] if isinstance(ckpt_input["ckpt_name"], list) else []
-        
-        # LoRAs
-        if "LoraLoader" in info:
-            lora_info = info["LoraLoader"]
-            if "input" in lora_info and "required" in lora_info["input"]:
-                lora_input = lora_info["input"]["required"]
-                if "lora_name" in lora_input:
-                    models_info["loras"] = lora_input["lora_name"][0] if isinstance(lora_input["lora_name"], list) else []
-        
-        # Samplers
-        if "KSampler" in info:
-            ksampler_info = info["KSampler"]
-            if "input" in ksampler_info and "required" in ksampler_info["input"]:
-                sampler_input = ksampler_info["input"]["required"]
-                if "sampler_name" in sampler_input:
-                    models_info["samplers"] = sampler_input["sampler_name"][0] if isinstance(sampler_input["sampler_name"], list) else []
-        
-        return {"success": True, "models": models_info}
+        return results
         
     except Exception as e:
-        return {"error": f"Failed to get model info: {str(e)}"}
+        return {"error": f"Model download failed: {str(e)}"}
 
-def validate_workflow(workflow):
-    """Validate workflow against ComfyUI"""
+def test_comfyui_api():
+    """Test ComfyUI API endpoints"""
     try:
-        # Send workflow validation request
-        response = requests.post(
-            "http://localhost:8188/prompt",
-            json={"prompt": workflow, "validate_only": True},  # Some ComfyUI versions support validation
-            timeout=10
-        )
+        tests = {}
         
-        return {
-            "status_code": response.status_code,
-            "response_text": response.text[:500],
-            "valid": response.status_code == 200
-        }
+        # Test main endpoint
+        try:
+            response = requests.get("http://127.0.0.1:8188/", timeout=10)
+            tests["main"] = {"status": response.status_code, "ok": response.status_code == 200}
+        except Exception as e:
+            tests["main"] = {"status": "error", "error": str(e), "ok": False}
+        
+        # Test queue
+        try:
+            response = requests.get("http://127.0.0.1:8188/queue", timeout=10)
+            tests["queue"] = {"status": response.status_code, "ok": response.status_code == 200}
+        except Exception as e:
+            tests["queue"] = {"status": "error", "error": str(e), "ok": False}
+        
+        # Test object_info (available models/nodes)
+        try:
+            response = requests.get("http://127.0.0.1:8188/object_info", timeout=10)
+            tests["object_info"] = {"status": response.status_code, "ok": response.status_code == 200}
+            if response.status_code == 200:
+                info = response.json()
+                tests["object_info"]["node_count"] = len(info)
+                
+                # Check for required nodes
+                required_nodes = ["CheckpointLoaderSimple", "LoraLoader", "KSampler", "SaveImage"]
+                missing_nodes = [node for node in required_nodes if node not in info]
+                tests["object_info"]["missing_nodes"] = missing_nodes
+                tests["object_info"]["has_required_nodes"] = len(missing_nodes) == 0
+                
+        except Exception as e:
+            tests["object_info"] = {"status": "error", "error": str(e), "ok": False}
+        
+        all_working = all(test.get("ok", False) for test in tests.values())
+        
+        return {"tests": tests, "all_working": all_working}
         
     except Exception as e:
-        return {"error": f"Validation failed: {str(e)}"}
+        return {"error": str(e), "all_working": False}
 
-def test_minimal_workflow():
-    """Test the most minimal possible workflow"""
+def generate_simple_image(prompt="a green frog"):
+    """Generate a simple image to test basic functionality"""
     try:
-        print("🧪 Testing minimal workflow...")
+        print(f"🖼️ Generating simple image: {prompt}")
         
-        # Ultra-simple workflow - just load model and save empty image
+        # Simple workflow without LoRA
         workflow = {
             "1": {
                 "inputs": {"ckpt_name": "sd15.safetensors"},
@@ -176,60 +133,79 @@ def test_minimal_workflow():
             },
             "2": {
                 "inputs": {
+                    "text": prompt,
+                    "clip": ["1", 1]
+                },
+                "class_type": "CLIPTextEncode"
+            },
+            "3": {
+                "inputs": {
+                    "text": "blurry, low quality",
+                    "clip": ["1", 1]
+                },
+                "class_type": "CLIPTextEncode"
+            },
+            "4": {
+                "inputs": {
                     "width": 512,
                     "height": 512,
                     "batch_size": 1
                 },
                 "class_type": "EmptyLatentImage"
             },
-            "3": {
+            "5": {
                 "inputs": {
-                    "samples": ["2", 0],
+                    "seed": int(time.time()) % 1000000,
+                    "steps": 20,
+                    "cfg": 7.5,
+                    "sampler_name": "euler",
+                    "scheduler": "normal",
+                    "denoise": 1.0,
+                    "model": ["1", 0],
+                    "positive": ["2", 0],
+                    "negative": ["3", 0],
+                    "latent_image": ["4", 0]
+                },
+                "class_type": "KSampler"
+            },
+            "6": {
+                "inputs": {
+                    "samples": ["5", 0],
                     "vae": ["1", 2]
                 },
                 "class_type": "VAEDecode"
             },
-            "4": {
+            "7": {
                 "inputs": {
-                    "filename_prefix": f"MINIMAL_TEST_{int(time.time())}",
-                    "images": ["3", 0]
+                    "filename_prefix": f"SIMPLE_{int(time.time())}",
+                    "images": ["6", 0]
                 },
                 "class_type": "SaveImage"
             }
         }
         
-        # Submit minimal workflow
+        # Submit workflow
         response = requests.post(
-            "http://localhost:8188/prompt",
+            "http://127.0.0.1:8188/prompt",
             json={"prompt": workflow},
             timeout=30
         )
         
-        result = {
-            "submit_status": response.status_code,
-            "submit_response": response.text[:200] if response.text else "No response text"
-        }
-        
         if response.status_code != 200:
-            return {"success": False, "error": "Submit failed", "details": result}
+            return {"error": f"Submit failed: {response.status_code} - {response.text}"}
         
-        try:
-            prompt_data = response.json()
-            prompt_id = prompt_data.get("prompt_id")
-            result["prompt_id"] = prompt_id
-        except:
-            result["prompt_id"] = None
-            return {"success": False, "error": "No JSON response", "details": result}
+        prompt_data = response.json()
+        prompt_id = prompt_data.get("prompt_id")
         
         if not prompt_id:
-            return {"success": False, "error": "No prompt ID", "details": result}
+            return {"error": f"No prompt ID: {prompt_data}"}
         
-        print(f"✅ Minimal workflow queued: {prompt_id}")
+        print(f"✅ Simple generation queued: {prompt_id}")
         
-        # Monitor for completion
-        for i in range(60):  # 1 minute timeout
+        # Wait for completion
+        for i in range(120):  # 2 minutes
             try:
-                queue_response = requests.get("http://localhost:8188/queue", timeout=5)
+                queue_response = requests.get("http://127.0.0.1:8188/queue", timeout=5)
                 if queue_response.status_code == 200:
                     queue_data = queue_response.json()
                     
@@ -243,152 +219,125 @@ def test_minimal_workflow():
                     )
                     
                     if not still_processing:
-                        result["completed"] = True
-                        result["completion_time"] = i
+                        print("🎉 Simple generation completed!")
                         break
                 
-                if i % 10 == 0:
-                    print(f"⏳ Minimal test... ({i}/60s)")
+                if i % 15 == 0:
+                    print(f"⏳ Generating... ({i}/120s)")
                 
                 time.sleep(1)
                 
             except Exception as e:
-                result["monitor_error"] = str(e)
-                break
+                print(f"⚠️ Monitor error: {e}")
+                time.sleep(1)
         
-        # Check history
-        try:
-            history_response = requests.get("http://localhost:8188/history", timeout=5)
-            if history_response.status_code == 200:
-                history = history_response.json()
-                if prompt_id in history:
-                    execution = history[prompt_id]
-                    result["history_found"] = True
-                    result["execution_status"] = execution.get("status", {})
-                    result["outputs"] = list(execution.get("outputs", {}).keys())
-                else:
-                    result["history_found"] = False
-                    result["available_history_ids"] = list(history.keys())[-3:]
-            else:
-                result["history_error"] = f"History request failed: {history_response.status_code}"
-        except Exception as e:
-            result["history_error"] = str(e)
+        # Find generated image
+        output_dir = "/app/comfyui/output"
+        recent_images = []
         
-        return {"success": result.get("completed", False), "details": result}
+        if os.path.exists(output_dir):
+            for root, dirs, files in os.walk(output_dir):
+                for file in files:
+                    if file.lower().endswith(('.png', '.jpg', '.jpeg')):
+                        file_path = os.path.join(root, file)
+                        if time.time() - os.path.getctime(file_path) < 300:  # Last 5 minutes
+                            recent_images.append(file_path)
         
-    except Exception as e:
-        return {"success": False, "error": f"Minimal test failed: {str(e)}"}
-
-def diagnose_generation_issue():
-    """Comprehensive diagnosis of why generation fails"""
-    try:
-        print("🔍 Diagnosing generation issues...")
-        
-        diagnosis = {}
-        
-        # Step 1: Check available models
-        print("🔍 Checking available models...")
-        models_info = get_available_models()
-        diagnosis["models"] = models_info
-        
-        # Step 2: Test minimal workflow
-        print("🔍 Testing minimal workflow...")
-        minimal_test = test_minimal_workflow()
-        diagnosis["minimal_test"] = minimal_test
-        
-        # Step 3: Check queue status
-        try:
-            queue_response = requests.get("http://localhost:8188/queue", timeout=5)
-            if queue_response.status_code == 200:
-                queue_data = queue_response.json()
-                diagnosis["queue_status"] = {
-                    "running": len(queue_data.get("queue_running", [])),
-                    "pending": len(queue_data.get("queue_pending", [])),
-                    "queue_data": queue_data
-                }
-            else:
-                diagnosis["queue_status"] = {"error": f"Queue check failed: {queue_response.status_code}"}
-        except Exception as e:
-            diagnosis["queue_status"] = {"error": str(e)}
-        
-        # Step 4: Check system stats
-        try:
-            stats_response = requests.get("http://localhost:8188/system_stats", timeout=5)
-            if stats_response.status_code == 200:
-                stats = stats_response.json()
-                diagnosis["system_stats"] = stats
-            else:
-                diagnosis["system_stats"] = {"error": f"Stats check failed: {stats_response.status_code}"}
-        except Exception as e:
-            diagnosis["system_stats"] = {"error": str(e)}
-        
-        # Step 5: Check output directory permissions
-        output_dir = "/runpod-volume/comfyui/output"
-        try:
-            # Test write permissions
-            test_file = os.path.join(output_dir, f"test_write_{int(time.time())}.txt")
-            with open(test_file, 'w') as f:
-                f.write("test")
-            os.remove(test_file)
-            diagnosis["output_permissions"] = {"writable": True}
-        except Exception as e:
-            diagnosis["output_permissions"] = {"writable": False, "error": str(e)}
-        
-        return diagnosis
+        if recent_images:
+            # Get most recent
+            latest_image = max(recent_images, key=os.path.getctime)
+            
+            # Convert to base64
+            with open(latest_image, 'rb') as f:
+                img_data = f.read()
+                img_base64 = base64.b64encode(img_data).decode('utf-8')
+            
+            return {
+                "success": True,
+                "prompt_id": prompt_id,
+                "image_path": latest_image,
+                "image_base64": img_base64,
+                "image_size": len(img_data)
+            }
+        else:
+            return {"error": "Generation completed but no images found"}
         
     except Exception as e:
-        return {"error": f"Diagnosis failed: {str(e)}"}
+        return {"error": f"Simple generation failed: {str(e)}"}
 
 def handler(event):
-    """Diagnostic handler to identify generation issues"""
-    print("🔍 DIAGNOSTIC HANDLER v1.0! 🕵️")
-    print("🎯 Finding out why generation fails despite working server")
+    """Main RunPod handler"""
+    print("🎭 SIMPLE PEPE HANDLER v1.0! 🐸")
     
     try:
         input_data = event.get('input', {})
+        action = input_data.get('action', 'generate')
+        prompt = input_data.get('prompt', 'a cute green frog cartoon')
         
-        # Step 1: Basic checks
-        print("🔄 Step 1: Volume and server checks...")
-        volume_check = check_volume_setup()
-        
-        if not volume_check.get("ready"):
+        if action == 'setup':
+            # Download models
+            model_results = download_models()
+            
+            # Test API
+            api_tests = test_comfyui_api()
+            
             return {
-                "error": "Volume not ready",
-                "volume_check": volume_check
+                "message": "Setup completed",
+                "models": model_results,
+                "api_tests": api_tests
             }
         
-        # Step 2: Start server
-        server_success, server_result = start_comfyui_server()
-        
-        if not server_success:
+        elif action == 'test':
+            # Test API and generate simple image
+            api_tests = test_comfyui_api()
+            
+            if not api_tests.get("all_working"):
+                return {
+                    "error": "ComfyUI API not working",
+                    "api_tests": api_tests
+                }
+            
+            generation_result = generate_simple_image(prompt)
+            
             return {
-                "error": "Server failed to start",
-                "server_result": server_result
+                "message": "Test completed",
+                "api_tests": api_tests,
+                "generation": generation_result
             }
         
-        # Step 3: Comprehensive diagnosis
-        print("🔄 Step 3: Running comprehensive diagnosis...")
-        diagnosis = diagnose_generation_issue()
-        
-        return {
-            "message": "🔍 DIAGNOSTIC COMPLETE",
-            "volume_check": volume_check,
-            "server_result": server_result,
-            "diagnosis": diagnosis,
-            "recommendations": [
-                "Check if models are loading correctly",
-                "Verify workflow syntax",
-                "Check file permissions",
-                "Look for silent failures in ComfyUI logs"
-            ]
-        }
+        else:  # default generate action
+            # Quick API test
+            api_tests = test_comfyui_api()
+            
+            if not api_tests.get("all_working"):
+                return {
+                    "error": "ComfyUI API not working",
+                    "api_tests": api_tests
+                }
+            
+            # Generate image
+            generation_result = generate_simple_image(prompt)
+            
+            if generation_result.get("success"):
+                return {
+                    "message": "🎉 IMAGE GENERATED! 🖼️",
+                    "prompt": prompt,
+                    "generation": generation_result,
+                    "success": True
+                }
+            else:
+                return {
+                    "error": "Generation failed",
+                    "details": generation_result,
+                    "api_tests": api_tests
+                }
         
     except Exception as e:
         return {
-            "error": f"Diagnostic failed: {str(e)}",
-            "partial_results": locals().get("diagnosis", {})
+            "error": f"Handler exception: {str(e)}",
+            "traceback": str(e)
         }
 
 if __name__ == '__main__':
-    print("🚀 Starting Diagnostic Handler...")
+    print("🚀 Starting Simple Pepe Handler...")
     runpod.serverless.start({'handler': handler})
