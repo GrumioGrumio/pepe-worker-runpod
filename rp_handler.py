@@ -5,6 +5,7 @@ import time
 import json
 import base64
 import glob
+from PIL import Image
 
 def setup_persistent_volume():
     """Set up persistent volume for models"""
@@ -179,10 +180,86 @@ def download_models_to_volume():
     except Exception as e:
         return {"error": f"Download failed: {str(e)}"}
 
-def generate_pepe_with_volume(prompt="wearing a crown"):
-    """Generate Pepe using models from persistent volume"""
+def wait_for_generation_and_get_image(prompt_id, timeout=60):
+    """Wait for generation to complete and return the image as base64"""
     try:
-        print(f"🐸 Generating Pepe from volume: {prompt}")
+        print(f"⏳ Waiting for generation {prompt_id} to complete...")
+        
+        start_time = time.time()
+        
+        while time.time() - start_time < timeout:
+            try:
+                # Check generation status
+                response = requests.get(f"http://127.0.0.1:8188/history/{prompt_id}", timeout=10)
+                
+                if response.status_code == 200:
+                    history = response.json()
+                    
+                    if prompt_id in history:
+                        prompt_data = history[prompt_id]
+                        
+                        # Check if generation is complete
+                        if "outputs" in prompt_data:
+                            print("✅ Generation completed! Looking for output images...")
+                            
+                            # Find the SaveImage node output
+                            for node_id, node_output in prompt_data["outputs"].items():
+                                if "images" in node_output:
+                                    images = node_output["images"]
+                                    
+                                    if images and len(images) > 0:
+                                        # Get the first image
+                                        image_info = images[0]
+                                        filename = image_info["filename"]
+                                        subfolder = image_info.get("subfolder", "")
+                                        
+                                        # Construct full path to the generated image
+                                        if subfolder:
+                                            image_path = f"/app/comfyui/output/{subfolder}/{filename}"
+                                        else:
+                                            image_path = f"/app/comfyui/output/{filename}"
+                                        
+                                        print(f"📸 Found image: {image_path}")
+                                        
+                                        # Check if file exists
+                                        if os.path.exists(image_path):
+                                            # Convert image to base64
+                                            with open(image_path, "rb") as img_file:
+                                                img_data = img_file.read()
+                                                image_base64 = base64.b64encode(img_data).decode('utf-8')
+                                                
+                                            print(f"🎨 Successfully converted to base64: {len(image_base64)} chars")
+                                            
+                                            return {
+                                                "success": True,
+                                                "image_base64": image_base64,
+                                                "image_path": image_path,
+                                                "image_size": len(img_data),
+                                                "filename": filename
+                                            }
+                                        else:
+                                            print(f"❌ Image file not found: {image_path}")
+                                            return {"error": f"Generated image file not found: {image_path}"}
+                            
+                            return {"error": "No images found in generation output"}
+                
+                # If not complete, wait a bit
+                time.sleep(2)
+                print(f"⏳ Still waiting... ({int(time.time() - start_time)}s)")
+                
+            except Exception as e:
+                print(f"❌ Error checking status: {e}")
+                time.sleep(2)
+        
+        return {"error": f"Generation timeout after {timeout}s"}
+        
+    except Exception as e:
+        return {"error": f"Wait failed: {str(e)}"}
+
+def generate_logo_with_volume(prompt="professional logo design"):
+    """Generate logo using models from persistent volume and return base64"""
+    try:
+        print(f"🎨 Generating logo from volume: {prompt}")
         
         # Check ComfyUI can see models
         response = requests.get("http://127.0.0.1:8188/object_info", timeout=10)
@@ -209,13 +286,13 @@ def generate_pepe_with_volume(prompt="wearing a crown"):
         # Use first checkpoint (should be our SD1.5)
         checkpoint_name = available_checkpoints[0]
         
-        # Check if we have Pepe LoRA
-        has_pepe = any("pepe" in lora.lower() for lora in available_loras)
+        # Check if we have logo-related LoRAs
+        logo_loras = [lora for lora in available_loras if any(word in lora.lower() for word in ['logo', 'design', 'helper'])]
+        lora_to_use = logo_loras[0] if logo_loras else None
         
-        if has_pepe:
-            # Full Pepe workflow with LoRA
-            pepe_lora = next(lora for lora in available_loras if "pepe" in lora.lower())
-            
+        # Create workflow based on available models
+        if lora_to_use:
+            # Use LoRA for better logo generation
             workflow = {
                 "1": {
                     "inputs": {"ckpt_name": checkpoint_name},
@@ -223,9 +300,9 @@ def generate_pepe_with_volume(prompt="wearing a crown"):
                 },
                 "2": {
                     "inputs": {
-                        "lora_name": pepe_lora,
-                        "strength_model": 0.8,
-                        "strength_clip": 0.8,
+                        "lora_name": lora_to_use,
+                        "strength_model": 0.9,
+                        "strength_clip": 0.9,
                         "model": ["1", 0],
                         "clip": ["1", 1]
                     },
@@ -233,14 +310,14 @@ def generate_pepe_with_volume(prompt="wearing a crown"):
                 },
                 "3": {
                     "inputs": {
-                        "text": f"pepe the frog, {prompt}, meme style, cartoon, green frog",
+                        "text": f"{prompt}, logo design, clean, professional, high quality, vector art, simple background",
                         "clip": ["2", 1]
                     },
                     "class_type": "CLIPTextEncode"
                 },
                 "4": {
                     "inputs": {
-                        "text": "blurry, low quality, realistic, photorealistic",
+                        "text": "blurry, low quality, realistic, photorealistic, complex background, messy, cluttered",
                         "clip": ["2", 1]
                     },
                     "class_type": "CLIPTextEncode"
@@ -256,8 +333,8 @@ def generate_pepe_with_volume(prompt="wearing a crown"):
                 "6": {
                     "inputs": {
                         "seed": int(time.time()) % 1000000,
-                        "steps": 20,
-                        "cfg": 7.5,
+                        "steps": 25,
+                        "cfg": 8.0,
                         "sampler_name": "euler",
                         "scheduler": "normal",
                         "denoise": 1.0,
@@ -277,14 +354,14 @@ def generate_pepe_with_volume(prompt="wearing a crown"):
                 },
                 "8": {
                     "inputs": {
-                        "filename_prefix": f"VOLUME_PEPE_{int(time.time())}",
+                        "filename_prefix": f"LOGO_{int(time.time())}",
                         "images": ["7", 0]
                     },
                     "class_type": "SaveImage"
                 }
             }
         else:
-            # Simple frog without LoRA
+            # Simple logo without LoRA
             workflow = {
                 "1": {
                     "inputs": {"ckpt_name": checkpoint_name},
@@ -292,14 +369,14 @@ def generate_pepe_with_volume(prompt="wearing a crown"):
                 },
                 "2": {
                     "inputs": {
-                        "text": f"cute green frog, {prompt}, cartoon style",
+                        "text": f"{prompt}, logo design, clean, professional, high quality, vector art, simple background",
                         "clip": ["1", 1]
                     },
                     "class_type": "CLIPTextEncode"
                 },
                 "3": {
                     "inputs": {
-                        "text": "blurry, low quality",
+                        "text": "blurry, low quality, realistic, photorealistic, complex background, messy, cluttered",
                         "clip": ["1", 1]
                     },
                     "class_type": "CLIPTextEncode"
@@ -315,8 +392,8 @@ def generate_pepe_with_volume(prompt="wearing a crown"):
                 "5": {
                     "inputs": {
                         "seed": int(time.time()) % 1000000,
-                        "steps": 20,
-                        "cfg": 7.5,
+                        "steps": 25,
+                        "cfg": 8.0,
                         "sampler_name": "euler",
                         "scheduler": "normal",
                         "denoise": 1.0,
@@ -336,7 +413,7 @@ def generate_pepe_with_volume(prompt="wearing a crown"):
                 },
                 "7": {
                     "inputs": {
-                        "filename_prefix": f"VOLUME_FROG_{int(time.time())}",
+                        "filename_prefix": f"LOGO_{int(time.time())}",
                         "images": ["6", 0]
                     },
                     "class_type": "SaveImage"
@@ -356,26 +433,47 @@ def generate_pepe_with_volume(prompt="wearing a crown"):
         prompt_data = response.json()
         prompt_id = prompt_data.get("prompt_id")
         
-        return {
-            "success": True,
-            "prompt_id": prompt_id,
-            "checkpoint_used": checkpoint_name,
-            "lora_used": pepe_lora if has_pepe else None,
-            "available_checkpoints": available_checkpoints,
-            "available_loras": available_loras
-        }
+        if not prompt_id:
+            return {"error": "No prompt ID returned"}
+        
+        print(f"✅ Generation submitted with ID: {prompt_id}")
+        
+        # Wait for generation to complete and get the image
+        image_result = wait_for_generation_and_get_image(prompt_id, timeout=90)
+        
+        if image_result.get("success"):
+            return {
+                "success": True,
+                "prompt_id": prompt_id,
+                "checkpoint_used": checkpoint_name,
+                "lora_used": lora_to_use,
+                "available_checkpoints": available_checkpoints,
+                "available_loras": available_loras,
+                "image_base64": image_result["image_base64"],
+                "image_size": image_result["image_size"],
+                "filename": image_result["filename"]
+            }
+        else:
+            return {
+                "error": image_result.get("error", "Unknown error"),
+                "prompt_id": prompt_id,
+                "checkpoint_used": checkpoint_name,
+                "lora_used": lora_to_use,
+                "available_checkpoints": available_checkpoints,
+                "available_loras": available_loras
+            }
         
     except Exception as e:
         return {"error": f"Generation failed: {str(e)}"}
 
 def handler(event):
-    """Persistent volume handler"""
-    print("🗄️ PERSISTENT VOLUME HANDLER v1.0! 📦")
+    """Enhanced handler with base64 image return"""
+    print("🎨 LOGO GENERATOR HANDLER v2.0! 🖼️")
     
     try:
         input_data = event.get('input', {})
-        action = input_data.get('action', 'setup_and_generate')
-        prompt = input_data.get('prompt', 'wearing a golden crown')
+        action = input_data.get('action', 'generate')
+        prompt = input_data.get('prompt', 'professional logo design')
         
         if action == 'setup':
             # Set up volume and download models
@@ -394,8 +492,8 @@ def handler(event):
             }
         
         elif action == 'generate':
-            # Just generate with existing models
-            generation_result = generate_pepe_with_volume(prompt)
+            # Generate logo and return base64
+            generation_result = generate_logo_with_volume(prompt)
             
             return {
                 "message": "🐸 Generation completed",
@@ -404,17 +502,17 @@ def handler(event):
             }
         
         else:  # setup_and_generate
-            # Complete flow
+            # Complete flow with logo generation
             volume_setup = setup_persistent_volume()
             if not volume_setup.get("success"):
                 return {"error": "Volume setup failed", "details": volume_setup}
             
             model_check = check_volume_models()
             download_result = download_models_to_volume()
-            generation_result = generate_pepe_with_volume(prompt)
+            generation_result = generate_logo_with_volume(prompt)
             
             return {
-                "message": "🎉 COMPLETE VOLUME SETUP AND GENERATION!",
+                "message": "🎉 COMPLETE SETUP AND LOGO GENERATION!",
                 "prompt": prompt,
                 "volume_setup": volume_setup,
                 "model_check": model_check,
@@ -427,5 +525,5 @@ def handler(event):
         return {"error": f"Handler exception: {str(e)}"}
 
 if __name__ == '__main__':
-    print("🚀 Starting Persistent Volume Handler...")
+    print("🚀 Starting Logo Generation Handler...")
     runpod.serverless.start({'handler': handler})
