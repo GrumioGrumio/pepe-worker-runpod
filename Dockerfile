@@ -1,6 +1,5 @@
 # Use NVIDIA CUDA base image
 FROM nvidia/cuda:12.1.1-cudnn8-devel-ubuntu22.04
-
 ENV PYTHONUNBUFFERED=1
 ENV DEBIAN_FRONTEND=noninteractive
 ENV CUDA_VISIBLE_DEVICES=0
@@ -59,6 +58,50 @@ RUN mkdir -p models/checkpoints models/loras models/vae models/clip models/unet 
 # Create output directory
 RUN mkdir -p output
 
+# =============================================================================
+# DOWNLOAD ACTUAL MODEL FILES (THIS WAS MISSING!)
+# =============================================================================
+
+# Download Stable Diffusion 1.5 base model (4.2GB)
+RUN echo "🔥 Downloading Stable Diffusion 1.5 base model..." && \
+    wget -O models/checkpoints/sd15.safetensors \
+    "https://huggingface.co/runwayml/stable-diffusion-v1-5/resolve/main/v1-5-pruned-emaonly.safetensors"
+
+# Download VAE for better image quality
+RUN echo "🔥 Downloading VAE model..." && \
+    wget -O models/vae/vae-ft-mse-840000-ema-pruned.safetensors \
+    "https://huggingface.co/stabilityai/sd-vae-ft-mse-original/resolve/main/vae-ft-mse-840000-ema-pruned.safetensors"
+
+# Download a logo/design specialized LoRA (optional but recommended for logos)
+RUN echo "🔥 Downloading Logo LoRA..." && \
+    wget -O models/loras/logo_design.safetensors \
+    "https://civitai.com/api/download/models/87153" || \
+    echo "⚠️ Logo LoRA download failed, will use base model only"
+
+# Alternative: Download a more reliable LoRA
+RUN echo "🔥 Downloading backup design LoRA..." && \
+    wget -O models/loras/design_helper.safetensors \
+    "https://huggingface.co/artificialguybr/LogoRedmond-LogoLoraForSDXL-V2/resolve/main/LogoRedAF.safetensors" || \
+    echo "⚠️ Backup LoRA download failed"
+
+# Download CLIP models for text encoding
+RUN echo "🔥 Downloading CLIP models..." && \
+    mkdir -p models/clip && \
+    wget -O models/clip/clip_l.safetensors \
+    "https://huggingface.co/comfyanonymous/flux_text_encoders/resolve/main/clip_l.safetensors" || \
+    echo "⚠️ CLIP download failed, using default"
+
+# Verify downloaded models
+RUN echo "📊 Verifying downloaded models:" && \
+    ls -la models/checkpoints/ && \
+    ls -la models/vae/ && \
+    ls -la models/loras/ && \
+    echo "✅ Model verification complete"
+
+# =============================================================================
+# END MODEL DOWNLOADS
+# =============================================================================
+
 # Set proper permissions
 RUN chmod -R 755 /app
 
@@ -71,6 +114,9 @@ WORKDIR /app
 
 # Test GPU and PyTorch installation
 RUN python -c "import torch; print(f'PyTorch version: {torch.__version__}'); print(f'CUDA available: {torch.cuda.is_available()}'); print(f'CUDA version: {torch.version.cuda}')" || echo "CUDA test will run at runtime"
+
+# Test that models are accessible
+RUN python -c "import os; print('📁 Checkpoint files:', os.listdir('/app/comfyui/models/checkpoints')); print('📁 VAE files:', os.listdir('/app/comfyui/models/vae'))"
 
 # Start the worker
 CMD ["python", "start_worker.py"]
