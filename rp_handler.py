@@ -239,7 +239,58 @@ def wait_for_generation_and_get_image(prompt_id, timeout=60):
                                             }
                                         else:
                                             print(f"❌ Image file not found: {image_path}")
-                                            return {"error": f"Generated image file not found: {image_path}"}
+                            
+                            # If no images found in API response, try scanning output directory
+                            print("🔍 No images in API response, scanning output directory...")
+                            output_dir = "/app/comfyui/output"
+                            
+                            if os.path.exists(output_dir):
+                                # Look for recent PNG files
+                                png_files = glob.glob(f"{output_dir}/*.png")
+                                if png_files:
+                                    # Sort by modification time, get the newest
+                                    latest_image = max(png_files, key=os.path.getmtime)
+                                    
+                                    # Check if it's recent (within last 2 minutes)
+                                    file_time = os.path.getmtime(latest_image)
+                                    if time.time() - file_time < 120:  # 2 minutes
+                                        print(f"📸 Found recent image in directory: {latest_image}")
+                                        
+                                        with open(latest_image, "rb") as img_file:
+                                            img_data = img_file.read()
+                                            image_base64 = base64.b64encode(img_data).decode('utf-8')
+                                        
+                                        return {
+                                            "success": True,
+                                            "image_base64": image_base64,
+                                            "image_path": latest_image,
+                                            "image_size": len(img_data),
+                                            "filename": os.path.basename(latest_image),
+                                            "found_method": "directory_scan"
+                                        }
+                                
+                                # Also check subdirectories
+                                for root, dirs, files in os.walk(output_dir):
+                                    for file in files:
+                                        if file.endswith('.png') or file.endswith('.jpg'):
+                                            full_path = os.path.join(root, file)
+                                            file_time = os.path.getmtime(full_path)
+                                            
+                                            if time.time() - file_time < 120:  # Recent file
+                                                print(f"📸 Found recent image in subdirectory: {full_path}")
+                                                
+                                                with open(full_path, "rb") as img_file:
+                                                    img_data = img_file.read()
+                                                    image_base64 = base64.b64encode(img_data).decode('utf-8')
+                                                
+                                                return {
+                                                    "success": True,
+                                                    "image_base64": image_base64,
+                                                    "image_path": full_path,
+                                                    "image_size": len(img_data),
+                                                    "filename": file,
+                                                    "found_method": "subdirectory_scan"
+                                                }
                             
                             return {"error": "No images found in generation output"}
                 
@@ -251,7 +302,43 @@ def wait_for_generation_and_get_image(prompt_id, timeout=60):
                 print(f"❌ Error checking status: {e}")
                 time.sleep(2)
         
-        return {"error": f"Generation timeout after {timeout}s"}
+        # Final attempt - scan output directory for any recent images
+        print("🔍 Timeout reached, doing final scan of output directory...")
+        output_dir = "/app/comfyui/output"
+        
+        if os.path.exists(output_dir):
+            # List all files in output directory
+            all_files = []
+            for root, dirs, files in os.walk(output_dir):
+                for file in files:
+                    if file.endswith(('.png', '.jpg', '.jpeg')):
+                        full_path = os.path.join(root, file)
+                        file_time = os.path.getmtime(full_path)
+                        all_files.append((full_path, file_time))
+            
+            if all_files:
+                # Sort by time, get most recent
+                latest_file = max(all_files, key=lambda x: x[1])
+                latest_path = latest_file[0]
+                
+                # If it's reasonably recent (within 5 minutes), use it
+                if time.time() - latest_file[1] < 300:
+                    print(f"📸 Using most recent image from final scan: {latest_path}")
+                    
+                    with open(latest_path, "rb") as img_file:
+                        img_data = img_file.read()
+                        image_base64 = base64.b64encode(img_data).decode('utf-8')
+                    
+                    return {
+                        "success": True,
+                        "image_base64": image_base64,
+                        "image_path": latest_path,
+                        "image_size": len(img_data),
+                        "filename": os.path.basename(latest_path),
+                        "found_method": "final_scan"
+                    }
+        
+        return {"error": f"Generation timeout after {timeout}s, no images found"}
         
     except Exception as e:
         return {"error": f"Wait failed: {str(e)}"}
